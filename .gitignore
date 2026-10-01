@@ -1,0 +1,26 @@
+# ---- 烘焙产物（可重建，体积不小）----
+# 骨架 / 动画目录 / 原版部件 / 每个 mod 的几何贴图，全部由 `mbpreview bake` 生成
+data/
+
+# ---- 出图产物 ----
+_out/
+
+# ---- 调研中间产物（guid 索引 15MB、动画清单等，可重建）----
+_research/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ---- 本地配置（含机器相关的绝对路径，不入库）----
+config.json

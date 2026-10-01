@@ -1,0 +1,358 @@
+# -*- coding: utf-8 -*-
+"""烘焙主流程：把游戏资产 + mod 资产转成查看器能直接吃的目录。
+
+产物布局（data/ 下）：
+    cache/                      跨 mod 共享，只重建一次
+        skeleton.json           骨架 bind pose
+        catalog.json            动画目录（含时长/速率/动作映射）
+        vanilla/geo/*.mbmg      原版皮肤部件
+        vanilla/materials.json
+        anim/<key>.mban         按需烘焙的动画
+    mods/<mod>/                 每个 mod 一份
+        manifest.json           总清单（查看器入口）
+        geo/*.mbmg  tex/*.png
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from pathlib import Path
+
+import numpy as np
+
+from . import actions as A
+from . import animation as AN
+from . import config as C
+from . import equipment as EQ
+from . import geometry as GEO
+from . import material as MAT
+from . import mbtool as MB
+from . import skeleton as SK
+
+
+def _log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def _fresh(target: Path, *sources: Path) -> bool:
+    """目标比所有来源都新才算新鲜（缓存键必须包含影响输出的全部来源）。"""
+    if not target.exists():
+        return False
+    t = target.stat().st_mtime
+    return all((not s.exists()) or s.stat().st_mtime <= t for s in sources)
+
+
+# --------------------------------------------------------------------------- 共享：骨架
+
+def ensure_skeleton(force: bool = False) -> dict:
+    """返回**查看器格式**的骨架（restLocal / bindWorld / parent / names）。
+
+    缓存里存 mbtool 的原始 skeljson（便于排查），每次再转成查看器格式给前端。
+    """
+    e = C.env()
+    raw_path = e.cache_dir / "skeleton_raw.json"
+    sk_pack = e.pack("skeletons")
+    if force or not _fresh(raw_path, sk_pack):
+        guid = MB.skeleton_guid(sk_pack, "bip01_notused")
+        MB.skeljson(sk_pack, guid, raw_path)
+    rig = SK.parse_skeljson(json.loads(raw_path.read_text(encoding="utf-8")))
+    chk = SK.check(rig)
+    if force or not getattr(ensure_skeleton, "_logged", False):
+        _log(f"  骨架 {rig['boneCount']} 骨  头高={chk.get('head_z', 0):.3f}  "
+             f"脚底 z={chk.get('toe_z')}")
+        for w in chk["warnings"]:
+            _log(f"  ! 骨架自检: {w}")
+        ensure_skeleton._logged = True
+    return SK.to_viewer(rig)
+
+
+# --------------------------------------------------------------------------- 共享：动画目录
+
+# 目录格式版本：改了 build_catalog / _norm 之类影响输出的逻辑就 +1，强制重建缓存
+CATALOG_VERSION = 4
+
+
+def ensure_catalog(force: bool = False) -> dict:
+    e = C.env()
+    out = e.cache_dir / "catalog.json"
+    srcs = [e.pack("animations"), e.pack("animation_clips"),
+            e.native_data / "action_sets.xml"]
+    if not force and out.exists():
+        try:
+            old = json.loads(out.read_text(encoding="utf-8"))
+            if old.get("version") != CATALOG_VERSION:
+                force = True
+        except Exception:
+            force = True
+    if force or not _fresh(out, *srcs):
+        t0 = time.time()
+        _log("  读取动画清单（首次较慢，之后走缓存）…")
+        anims = MB.animlist(e.pack("animations"))
+        _log(f"    骨骼动画 {len(anims)} 个  ({time.time()-t0:.1f}s)")
+        clips = MB.cliplist(e.pack("animation_clips"))
+        _log(f"    动画剪辑 {len(clips)} 个  ({time.time()-t0:.1f}s)")
+        cat = A.build_catalog(e.native_data / "action_sets.xml", anims, clips)
+        cat["builtAt"] = time.time()
+        cat["version"] = CATALOG_VERSION
+        linked = sum(1 for x in cat["items"] if x["actionCount"] > 0)
+        _log(f"    动作类型 {cat['actionCount']} 个 → 目录条目 {cat['count']} 条"
+             f"（其中 {linked} 条挂上了动作名）")
+        out.write_text(json.dumps(cat, ensure_ascii=False), encoding="utf-8")
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- 共享：动画烘焙
+
+def bake_anim(key: str, entry: dict, force: bool = False) -> Path:
+    e = C.env()
+    out = e.cache_dir / "anim" / f"{key}.mban"
+    if force or not out.exists():
+        tmp = out.with_suffix(".json")
+        data = MB.anim_json(e.pack("animations"), entry["anim"], tmp, e.pack("skeletons"))
+        anim = AN.parse_animjson(data)
+        AN.write_animbin(out, anim)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return out
+
+
+def ensure_anims(entries: list[dict], force: bool = False, progress=None) -> list[dict]:
+    got = []
+    for i, ent in enumerate(entries):
+        p = bake_anim(ent["key"], ent, force=force)
+        a = AN.read_animbin(p)
+        frames = int(a["frames"])
+        start = int(a.get("start", 0))
+        # ★ 播放速率 = 有效跨度 / clip 声明的秒数。两个坑：
+        #   (1) 不能用 animlist 的 dur 字段当帧数 —— 它和实际关键帧范围不一致
+        #       （实测 inventory_idle：字段 630、实际 1267 帧、clip 15s），拿它算会慢一倍；
+        #   (2) 要扣掉开头那一帧绑定姿势（start），否则循环周期会多出一帧。
+        t_end = max(0, frames - 1)
+        span = max(1, t_end - start)
+        dur = ent.get("duration")
+        rate = (span / dur) if dur else None
+        got.append(dict(key=ent["key"], anim=ent["anim"], guid=ent.get("guid"),
+                        file=f"cache/anim/{ent['key']}.mban", frames=frames,
+                        tEnd=t_end, start=start, span=span, duration=dur, rate=rate,
+                        cyclic=bool(ent.get("cyclic")), category=ent.get("category", "其他"),
+                        actions=ent.get("actions", [])[:24], actionCount=ent.get("actionCount", 0)))
+        if progress:
+            progress(i + 1, len(entries), ent["key"])
+    return got
+
+
+# --------------------------------------------------------------------------- 共享：原版皮肤部件
+
+def ensure_vanilla(force: bool = False) -> dict:
+    e = C.env()
+    vdir = e.cache_dir / "vanilla"
+    out = vdir / "vanilla.json"
+    human = e.pack("human")
+    if force or not _fresh(out, human):
+        if vdir.exists():
+            shutil.rmtree(vdir, ignore_errors=True)
+        exp = vdir / "_export"
+        pj = MB.exportmod(human, exp, all_mips=True)
+        geo_out = vdir / "geo"
+        parts = {}
+        for m in pj["meshes"]:
+            src = exp / m["file"]
+            subs = GEO.parse_gdmb(src)
+            # 只保留 lod0（预览不需要低模）
+            subs = [s for s in subs if s["lod"] == 0] or subs
+            if not subs:
+                continue
+            dst = geo_out / f"{m['name']}.mbmg"
+            GEO.write_meshpack(dst, subs)
+            parts[m["name"]] = dict(
+                mesh=m["name"], file=f"cache/vanilla/geo/{m['name']}.mbmg",
+                triangles=sum(0 if s["tri"] is None else s["tri"].size // 3 for s in subs),
+                vertices=sum(len(s["pos"]) for s in subs))
+        shutil.rmtree(exp, ignore_errors=True)
+
+        # 原版身体材质（跨包引用：网格在 human.tpac，材质在 body_materials.tpac）
+        mats = {}
+        try:
+            bm = e.pack("body_materials")
+            bexp = vdir / "_bm"
+            bpj = MB.exportmod(bm, bexp, all_mips=True)
+            for m in bpj.get("materials", []):
+                mats[m["name"]] = MAT.simplify_material(m)
+            shutil.rmtree(bexp, ignore_errors=True)
+        except Exception as ex:
+            _log(f"  ! 原版身体材质读取失败（不影响几何预览）: {ex}")
+        out.write_text(json.dumps(dict(parts=parts, materials=mats), ensure_ascii=False),
+                       encoding="utf-8")
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- mod 烘焙
+
+def find_mod(name_or_path: str) -> Path:
+    p = Path(name_or_path)
+    if p.is_dir():
+        return p.resolve()
+    e = C.env()
+    cand = e.module_dir(name_or_path)
+    if cand.is_dir():
+        return cand.resolve()
+    raise FileNotFoundError(
+        f"找不到 mod: {name_or_path}\n  可给 mod 名（在 <游戏>/Modules/ 下）或直接给目录路径。")
+
+
+def list_mods() -> list[dict]:
+    """列出已安装的、带 AssetPackages 的 mod（即"可预览的皮套 mod"）。"""
+    e = C.env()
+    out = []
+    try:
+        mods_dir = e.modules_dir
+    except RuntimeError:
+        return out
+    for d in sorted(mods_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        packs = sorted((d / "AssetPackages").glob("*.tpac")) if (d / "AssetPackages").is_dir() else []
+        if not packs:
+            continue
+        items = list((d / "ModuleData").glob("items*.xml")) + \
+            list((d / "ModuleData" / "items").glob("*.xml")) if (d / "ModuleData").is_dir() else []
+        out.append(dict(name=d.name, path=str(d), packs=[str(p) for p in packs],
+                        hasItems=bool(items)))
+    return out
+
+
+def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
+             force: bool = False, skin_prefer: str = "man",
+             skip_anims: bool = False, progress=None) -> dict:
+    e = C.env()
+    C.ensure_dirs()
+    mod_dir = find_mod(mod)
+    mod_name = mod_dir.name
+    out_dir = e.data_dir / "mods" / mod_name
+    packs = sorted((mod_dir / "AssetPackages").glob("*.tpac"))
+    if not packs:
+        raise FileNotFoundError(f"{mod_dir} 下没有 AssetPackages/*.tpac")
+
+    _log(f"烘焙 mod: {mod_name}")
+    _log(f"  包: {', '.join(p.name for p in packs)}")
+    rig_json = ensure_skeleton(force)
+
+    # ---- 几何 / 材质 / 贴图 ----
+    exp = out_dir / "_export"
+    pj = MB.exportmod(packs[0], exp, all_mips=True)
+    st = pj["stats"]
+    _log(f"  导出: {st['meshes']} 网格 / {st['submeshes']} 子网格 / "
+         f"{st['vertices']} 顶点 / {st['triangles']} 三角")
+
+    geo_dir = out_dir / "geo"
+    tex_dir = out_dir / "tex"
+    if force:
+        for d in (geo_dir, tex_dir):
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+
+    meshes = []
+    audit_all = dict(submeshes=0, vertices=0, triangles=0, materials=[], warnings=[])
+    for m in pj["meshes"]:
+        src = exp / m["file"]
+        if not src.exists():
+            continue
+        subs = GEO.parse_gdmb(src)
+        lod0 = [s for s in subs if s["lod"] == 0]
+        subs = lod0 or subs
+        a = GEO.audit(subs)
+        audit_all["submeshes"] += a["submeshes"]
+        audit_all["vertices"] += a["vertices"]
+        audit_all["triangles"] += a["triangles"]
+        for mm in a["materials"]:
+            if mm not in audit_all["materials"]:
+                audit_all["materials"].append(mm)
+        audit_all["warnings"] += [f"{m['name']}: {w}" for w in a["warnings"]]
+        dst = geo_dir / f"{m['name']}.mbmg"
+        GEO.write_meshpack(dst, subs)
+        meshes.append(dict(mesh=m["name"], file=f"mods/{mod_name}/geo/{m['name']}.mbmg",
+                           lod=m.get("lod", 0),
+                           submeshes=[dict(name=s["name"], material=s["material"],
+                                           vertices=len(s["pos"]),
+                                           triangles=0 if s["tri"] is None else s["tri"].size // 3,
+                                           bbox=list(s["bbox"])) for s in subs],
+                           vertices=a["vertices"], triangles=a["triangles"]))
+
+    # ---- 材质 ----
+    materials = {}
+    for m in pj.get("materials", []):
+        materials[m["name"]] = MAT.simplify_material(m)
+
+    # ---- 贴图 ----
+    textures = {}
+    tex_src = exp / "tex"
+    for t in pj.get("textures", []):
+        try:
+            meta = MAT.export_texture(t, tex_src, tex_dir)
+            meta["file"] = f"mods/{mod_name}/tex/{meta['name']}.png"
+            textures[meta["name"]] = meta
+        except Exception as ex:
+            _log(f"  ! 贴图 {t.get('name')} 解码失败: {ex}")
+
+    shutil.rmtree(exp, ignore_errors=True)
+
+    # ---- 装备定义 ----
+    items = EQ.load_module_items(mod_dir, mod_name)
+    items = [it for it in items if it["mesh"]]
+    _log(f"  装备件: {len(items)}")
+
+    # ---- 原版皮肤部件 ----
+    vanilla = ensure_vanilla(force)
+    skins = EQ.parse_skins(e.native_data / "skins.xml")
+    skin = skins.get(skin_prefer) or EQ.vanilla_skin_catalog(e.native_data / "skins.xml")
+    # 把可用体型一并给前端；前端只加载选中的那一套，否则男女两具身体会同时出现
+    skins_view = {k: dict(label=SK_LABELS.get(k, k), gender=v["gender"],
+                          maturity=v["maturity"], parts=v["parts"])
+                  for k, v in skins.items() if v["maturity"] == "adult"}
+
+    # ---- 动画 ----
+    catalog = ensure_catalog(force) if not skip_anims else dict(items=[], core=[], count=0, actionCount=0)
+    anim_entries = []
+    if not skip_anims:
+        if anims:
+            sel = A.resolve_anims(catalog, anims)
+            _log(f"  选定动画 {len(sel)} 个（来自请求: {', '.join(anims[:6])}{'…' if len(anims) > 6 else ''}）")
+        else:
+            sel = A.default_selection(catalog, limit=anim_limit)
+            _log(f"  默认动画集 {len(sel)} 个")
+        anim_entries = ensure_anims(sel, force=force, progress=progress)
+
+    manifest = dict(
+        format=1, mod=mod_name, modPath=str(mod_dir), builtAt=time.time(),
+        meshes=meshes, materials=materials, textures=textures,
+        items=items, skeleton=rig_json, vanilla=vanilla,
+        skin=dict(name=skin["name"], parts=skin["parts"],
+                  label=SK_LABELS.get(skin["name"], skin["name"])),
+        skins=skins_view,
+        anims=anim_entries,
+        catalogSummary=dict(count=catalog.get("count", 0), actionCount=catalog.get("actionCount", 0)),
+        audit=audit_all,
+        stats=dict(vertices=st["vertices"], triangles=st["triangles"]),
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    # 完整目录单独放（可能很大），查看器需要时再取
+    if not skip_anims:
+        catfile = out_dir / "catalog.json"
+        catfile.write_text(json.dumps(
+            dict(items=[dict(key=x["key"], anim=x["anim"], tEnd=x["tEnd"], duration=x["duration"],
+                             rate=x["rate"], cyclic=x["cyclic"], category=x["category"],
+                             actionCount=x["actionCount"], actions=x["actions"][:6])
+                        for x in catalog["items"]]), ensure_ascii=False), encoding="utf-8")
+
+    for w in audit_all["warnings"]:
+        _log(f"  ! {w}")
+    _log(f"  完成 → {out_dir}")
+    return manifest
+
+
+SK_LABELS = {"man": "成年男性", "woman": "成年女性"}
