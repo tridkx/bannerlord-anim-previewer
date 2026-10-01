@@ -1,7 +1,11 @@
 # 骑砍2 皮套 Mod 动画预览器
 
+**https://github.com/tridkx/bannerlord-anim-previewer**
+
 不进入游戏，就能看到皮套 mod 在**游戏原版动画**下的实机形态。
 人类用浏览器界面看；AI 用命令行出图与自动巡检。
+
+依赖 [`bannerlord-tpac-toolkit`](https://github.com/tridkx/bannerlord-tpac-toolkit)（`mbtool`）读 `.tpac`。
 
 ```
 preview.bat                       ← 双击即用（自检 → 起服务 → 开浏览器）
@@ -57,7 +61,10 @@ preview.bat
 mbpreview.bat serve [--port 8777] [--no-browser]
 ```
 浏览器界面里可以：
-- **动画**：搜索 / 按分类筛选 4031 条动画，时间轴拖动、变速、循环；播放速率取自 `AnimationClip` 声明的真实时长
+- **动画**：搜索 / 按分类筛选 4031 条动画，时间轴拖动、循环；播放速率取自 `AnimationClip` 声明的真实时长
+- **倍速**：`0.25× / 0.5× / 1× / 1.5× / 2× / 3×` 快捷按钮 + 任意数值（0.05~10）+ 滑块微调。
+  1.00× = 严格按游戏 clip 时长播放；**但游戏内实际观感未必与这个数字一致，
+  所以自己拖到舒服为止，设置会自动记住**（localStorage）
 - **装备**：按槽位勾选装备；标出哪些原版部件**没被遮住会露出来**
 - **显示**：正/背/左/右/顶/脸/脚 视角，骨骼线框，地面网格，调试视图（仅贴图 / 法线 / UV / 仅光照），光照预设，背景色
 - **诊断**：一键体检当前组合
@@ -223,4 +230,29 @@ data/                   烘焙产物（可删，会重建）
 ```bash
 mbpreview.bat shot --mod X --only ying_skin --debug 1 -o layer.png
 mbpreview.bat shot --mod X --no-alpha-test --debug 1 -o noat.png
+```
+
+
+---
+
+## 给 AI 的调试接口
+
+无头环境下除了命令行，页面里还暴露了 `window.__preview`，方便脚本驱动与断言：
+
+```js
+window.__ready                    // true = 加载完成（headless 截图应等它）
+window.__preview.cam              // {az, el, dist, target}
+window.__preview.frame            // 当前帧号（NaN 说明渲染循环出问题）
+window.__preview.speed            // 当前倍速
+window.__preview.visibleMeshes    // 可见网格数（0 = 什么都没渲染出来）
+window.__preview.setSpeed(0.5)    // 设倍速
+window.__preview.view('left')     // 切视角
+```
+
+URL 参数（等价入口）：
+
+```
+?mod=<mod名>&anim=<动画key>&frame=<帧号>&view=<front|back|left|right|top|face|feet>
+&equip=all|none|<逗号分隔的装备id>&skin=man|woman&speed=<倍速>
+&vanilla=0|1&bones=0|1&grid=0|1&debug=0..4&light=item|day|night|studio&only=<材质名>&noalphatest=1
 ```

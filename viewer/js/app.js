@@ -869,6 +869,16 @@ async function main() {
   }
   document.title = `皮套预览器 · ${first}`;
   window.__ready = true;      // 供 headless 截图判断加载完成
+  // 供 AI 查询/驱动的调试接口（headless 环境下用它验证相机、倍速、可见性等状态）
+  window.__preview = {
+    state,
+    get cam() { return state.cam; },
+    get frame() { return state.frame; },
+    get speed() { return state.speed; },
+    get visibleMeshes() { return state.scene.filter(n => n.visible).length; },
+    setSpeed: (v) => window.setSpeed(v),
+    view: (n) => applyView(n),
+  };
 
   lastT = performance.now();
   requestAnimationFrame(loop);
