@@ -7,6 +7,9 @@
 
 依赖 [`bannerlord-tpac-toolkit`](https://github.com/tridkx/bannerlord-tpac-toolkit)（`mbtool`）读 `.tpac`。
 
+> 📄 本文 = **用法**。数据格式结论、判据设计、踩坑记录在
+> **[`docs/technical-notes.md`](docs/technical-notes.md)** —— 改动渲染/烘焙代码前建议先读。
+
 ```
 preview.bat                       ← 双击即用（自检 → 起服务 → 开浏览器）
 preview.bat PitaoYingOutfits      ← 先烘焙指定 mod 再打开
