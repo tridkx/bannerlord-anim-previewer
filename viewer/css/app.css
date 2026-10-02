@@ -188,7 +188,8 @@ button.on { background: var(--accent2); border-color: var(--accent2); color: #10
   display: flex; align-items: center; gap: 7px; padding: 4px 6px;
   font-size: 12px; border-radius: 4px;
 }
-.skin-row .nm { flex: 1; }
+.skin-row .nm { flex: none; min-width: 74px; }
+.skin-row .src { color: var(--dim); font-size: 11px; flex: 1; text-align: right; }
 .badge { font-size: 11px; padding: 1px 6px; border-radius: 8px; }
 .badge.hidden { background: #24313a; color: var(--dim); }
 .badge.exposed { background: #3a2a1e; color: var(--warn); }

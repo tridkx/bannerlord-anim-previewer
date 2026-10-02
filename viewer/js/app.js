@@ -807,23 +807,49 @@ function renderSkinList(equippedItems, hidden) {
   if (!el) return;
   const parts = (state.manifest.vanilla || {}).parts || {};
   const skinParts = activeSkin().parts || {};
+  const byId = state._byId || new Map();
+  // 哪个部位被哪件 mod 装备遮住的
+  const byWho = {};
+  for (const it of equippedItems) {
+    const c = it.covers || {};
+    if (c.body) ['body', 'shoulders', 'underwear_top'].forEach(k => byWho[k] ??= it.id);
+    if (c.hands) byWho.hands ??= it.id;
+    if (c.legs) ['legs', 'underwear_bottom'].forEach(k => byWho[k] ??= it.id);
+    if (c.head) byWho.face ??= it.id;
+    if ((it.hairCover || '').toLowerCase() === 'all') byWho.face ??= it.id;
+  }
   el.innerHTML = '';
+  let exposed = 0;
   for (const [k, meshName] of Object.entries(skinParts)) {
     if (!parts[meshName]) continue;
     const isHidden = hidden.has(k);
+    if (!isHidden) exposed++;
     const row = document.createElement('div');
     row.className = 'skin-row';
+    // ★ 说清楚"露出来的这个部位是游戏原版资产，不是你的 mod 提供的" ——
+    //   否则很容易把手/头当成 mod 自己的件（LVBU 的"天香"套就没有手部装备，
+    //   那只手一直是原版的，关掉原版显示后自然就没了）。
+    const detail = isHidden
+      ? `被 ${byWho[k] || '装备'} 遮住`
+      : '<b>原版游戏资产</b>（本 mod 无对应件）';
     row.innerHTML = `<span class="nm">${SKIN_LABEL[k] || k}</span>
-      <span class="badge ${isHidden ? 'hidden' : 'exposed'}">${isHidden ? '已遮住' : '露出'}</span>`;
+      <span class="badge ${isHidden ? 'hidden' : 'exposed'}">${isHidden ? '已遮住' : '露出'}</span>
+      <span class="src">${detail}</span>`;
     el.appendChild(row);
   }
   if (!el.children.length) el.innerHTML = '<p class="hint">未加载原版身体部件。</p>';
+  else if (exposed) {
+    const n = document.createElement('p');
+    n.className = 'hint';
+    n.innerHTML = `上面 <b class="warn">露出</b> 的 ${exposed} 个部位由<b>游戏原版</b>提供。`
+      + `关掉「显示原版身体/手/头」后这些位置会空掉 —— 那是正常现象，不是模型丢了。`;
+    el.appendChild(n);
+  }
 }
 
 const SKIN_LABEL = { body: '原版躯干', shoulders: '原版肩', legs: '原版脚', hands: '原版手',
                      face: '原版头/脸', underwear_bottom: '原版内裤', underwear_top: '原版内衣上' };
 
-/** 当前选用的原版体型定义（默认取烘焙时定下的那个，可在 URL 里用 skin= 覆盖） */
 function activeSkin() {
   const mf = state.manifest;
   const all = mf.skins || {};
