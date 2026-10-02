@@ -48,6 +48,8 @@ const state = {
   equipped: new Set(),
   hiddenMeshes: new Set(),
   scene: [],          // {key, name, subs, gpu, material, kind:'mod'|'vanilla', group}
+  texPending: 0,      // 还在后台加载的贴图数（用于 HUD 提示，不阻塞首帧）
+  texTotal: 0,
   animList: [],
   catFilter: '',
   query: '',
@@ -168,51 +170,35 @@ async function buildScene() {
   const mf = state.manifest;
   let scene = [];
 
-  // ---- mod 的装备件 ----
+  // ★ 只加载**已穿戴**的装备的网格。
+  //   早先是把所有网格一次性全加载 —— 单个 mod 只有 3 件时没问题，但
+  //   LVBU and DIAOCHAN 有 57 个网格 / 81 万顶点 / 188 张贴图，默认只穿 6 件却要
+  //   把全部加载完才出画面，实测直接超时。未穿戴的网格等勾选时再按需加载。
+  const byId = new Map((mf.items || []).map(it => [it.id, it]));
   const itemByMesh = new Map();
   for (const it of mf.items || []) itemByMesh.set(it.mesh, it);
 
+  state._meshIndex = new Map();     // mesh 名 → manifest 里的网格描述
+  for (const m of mf.meshes || []) state._meshIndex.set(m.mesh, m);
+  state._nonHuman = new Set((mf.meshes || []).filter(m => m.humanSkeleton === false)
+                                       .map(m => m.mesh));
+  state._itemByMesh = itemByMesh;
+  state._byId = byId;
+
   for (const m of mf.meshes || []) {
     const item = itemByMesh.get(m.mesh);
-    const subs = await loader.loadMesh(m.file);
-    // 每个子网格单独一条（材质可能不同）
-    for (const s of subs) {
-      scene.push({
-        key: `${m.mesh}/${s.meta.name}`, mesh: m.mesh, name: s.meta.name,
-        kind: 'mod', group: item ? item.id : m.mesh,
-        item: item || null, subs: [s], material: materialOf(s.meta.material),
-        visible: !item || state.equipped.has(item.id),
-      });
-    }
+    // 没有对应 item 的网格（不属于任何装备）总是加载
+    if (item && !state.equipped.has(item.id)) continue;
+    scene.push(...await loadMeshNodes(m, item));
   }
 
   // ---- 原版身体部件 ----
   // ★ 只加载「当前体型」用到的那几个网格。全部加载会让男女两具身体同时出现。
   // ★ partKey 必须是语义名（body/hands/legs/face…），因为 covers_* 就是按语义遮的；
   //   直接拿网格名当 key，隐藏集合永远匹配不上，"原版身体露出来"就永远看不见。
-  const van = mf.vanilla || { parts: {} };
-  const skinParts = activeSkin().parts || {};
-  const meshToSemantic = {};
-  for (const [sem, meshName] of Object.entries(skinParts)) meshToSemantic[meshName] = sem;
-  const wantMeshes = new Set(Object.values(skinParts));
-
-  for (const [meshName, info] of Object.entries(van.parts || {})) {
-    if (!wantMeshes.has(meshName)) continue;
-    const semantic = meshToSemantic[meshName] || meshName;
-    try {
-      const subs = await loader.loadMesh(info.file);
-      for (const s of subs) {
-        scene.push({
-          key: `vanilla/${semantic}/${s.meta.name}`, mesh: meshName, name: s.meta.name,
-          kind: 'vanilla', group: semantic, partKey: semantic, item: null, subs: [s],
-          material: materialOf(s.meta.material), visible: state.showVanilla,
-        });
-      }
-    } catch (e) { console.warn('原版部件加载失败', meshName, e); }
-  }
+  scene.push(...await loadVanillaNodes());
 
   if (state.only) {
-    // 支持逗号分隔的多个关键词（诊断时用来做「只显示这几层」的对照）
     const terms = state.only.toLowerCase().split(',').map(x => x.trim()).filter(Boolean);
     scene = scene.filter(n => terms.some(f =>
       n.name.toLowerCase().includes(f)
@@ -220,17 +206,94 @@ async function buildScene() {
       || n.mesh.toLowerCase().includes(f)));
   }
   state.scene = scene;
-  // 上传 GPU
-  for (const n of scene) n.gpu = renderer.upload(n.subs);
-  // 贴图
-  const rels = new Set();
-  for (const n of scene) for (const t of Object.values(n.material.textures || {})) rels.add(t.file);
-  await Promise.all(Array.from(rels).map(async rel => {
-    const img = await loader.loadTexture(rel);
-    renderer.texture(rel, img);
-  }));
-
   applyEquipmentVisibility();
+}
+
+/** 把 manifest 里一个 metamesh 描述变成若干场景节点（含 GPU 上传与贴图预取） */
+async function loadMeshNodes(m, item) {
+  const out = [];
+  let subs;
+  try {
+    subs = await loader.loadMesh(m.file);
+  } catch (e) {
+    console.warn('网格加载失败', m.mesh, e);
+    return out;
+  }
+  for (const s of subs) {
+    const node = {
+      key: `${m.mesh}/${s.meta.name}`, mesh: m.mesh, name: s.meta.name,
+      kind: 'mod', group: item ? item.id : m.mesh,
+      item: item || null, subs: [s], material: materialOf(s.meta.material),
+      visible: !item || state.equipped.has(item.id),
+    };
+    node.gpu = renderer.upload(node.subs);
+    out.push(node);
+  }
+  // ★ 不 await：贴图放后台加载，网格先出画面。
+  //   实测 LVBU and DIAOCHAN 有 23 张贴图（含 4 张 2048²），等它们全部上传 + 生成 mip
+  //   才首帧的话，软件渲染下要两分多钟。渲染循环一直在跑，贴图到位后自然就用上了。
+  prefetchTextures(out);
+  return out;
+}
+
+async function prefetchTextures(nodes) {
+  const rels = new Set();
+  for (const n of nodes) for (const t of Object.values(n.material.textures || {})) rels.add(t.file);
+  const todo = Array.from(rels).filter(rel => !renderer.texGpu.has(rel));
+  if (!todo.length) return;
+  state.texPending += todo.length;
+  state.texTotal += todo.length;
+  await Promise.all(todo.map(async rel => {
+    const img = await loader.loadTexture(rel);
+    renderer.texture(rel, img);          // 加载一张就生效一张
+    state.texPending--;
+  }));
+}
+
+async function loadVanillaNodes() {
+  const mf = state.manifest;
+  const out = [];
+  const van = mf.vanilla || { parts: {} };
+  const skinParts = activeSkin().parts || {};
+  const meshToSemantic = {};
+  for (const [sem, meshName] of Object.entries(skinParts)) meshToSemantic[meshName] = sem;
+  const wantMeshes = new Set(Object.values(skinParts));
+  for (const [meshName, info] of Object.entries(van.parts || {})) {
+    if (!wantMeshes.has(meshName)) continue;
+    const semantic = meshToSemantic[meshName] || meshName;
+    try {
+      const subs = await loader.loadMesh(info.file);
+      for (const s of subs) {
+        const node = {
+          key: `vanilla/${semantic}/${s.meta.name}`, mesh: meshName, name: s.meta.name,
+          kind: 'vanilla', group: semantic, partKey: semantic, item: null, subs: [s],
+          material: materialOf(s.meta.material), visible: state.showVanilla,
+        };
+        node.gpu = renderer.upload(node.subs);
+        out.push(node);
+      }
+      prefetchTextures(out.slice(-subs.length));
+    } catch (e) { console.warn('原版部件加载失败', meshName, e); }
+  }
+  return out;
+}
+
+/** 按需把某些装备的网格加载进场景（勾选时调） */
+async function ensureMeshesLoaded(itemIds) {
+  const need = [];
+  for (const id of itemIds) {
+    const it = state._byId.get(id);
+    if (!it) continue;
+    if (state.scene.some(n => n.kind === 'mod' && n.item && n.item.id === id)) continue;
+    const m = state._meshIndex.get(it.mesh);
+    if (m) need.push([m, it]);
+  }
+  if (!need.length) return;
+  setLoading(true, `加载 ${need.length} 件装备的网格…`);
+  for (const [m, it] of need) {
+    state.scene.push(...await loadMeshNodes(m, it));
+  }
+  setLoading(false);
 }
 
 /** 按「已装备 + covers 遮盖」重算可见性 —— 这是"原版身体露出来"能被看见的关键 */
@@ -480,66 +543,107 @@ function renderEquipList() {
   const mf = state.manifest;
   const el = $('#equip-list');
   el.innerHTML = '';
-  const groups = new Map();
-  for (const it of mf.items || []) {
-    if (!groups.has(it.slot)) groups.set(it.slot, []);
-    groups.get(it.slot).push(it);
+  const items = mf.items || [];
+  const byId = new Map(items.map(it => [it.id, it]));
+  const bySlot = new Map();
+  for (const it of items) {
+    if (!bySlot.has(it.slot)) bySlot.set(it.slot, []);
+    bySlot.get(it.slot).push(it);
   }
-  const order = ['Head', 'Cape', 'Body', 'Gloves', 'Leg', 'Item0', 'Other'];
-  const label = { Head: '头部', Cape: '披风', Body: '身体', Gloves: '手', Leg: '腿脚', Item0: '手持', Other: '其他' };
+  state._equipById = byId;
+  state._equipBySlot = bySlot;
+
+  // ---- 多套装备：一键穿整套 ----
+  const sets = mf.sets || [];
+  if (sets.length) {
+    const box = document.createElement('div');
+    box.className = 'eq-group';
+    box.innerHTML = `<div class="gl">整套（${sets.length} 套）</div>`;
+    const row = document.createElement('div');
+    row.className = 'row chips';
+    for (const st of sets) {
+      const b = document.createElement('button');
+      b.className = 'chip';
+      b.textContent = `${st.label} (${st.members.length})`;
+      b.title = st.members.join('\n');
+      b.onclick = async () => {
+        // 穿整套 = 对这套里每件装备做一次「选中」，同槽位的旧装备自动让位
+        const ids = [];
+        for (const id of st.members) {
+          const it = byId.get(id);
+          if (!it) continue;
+          for (const other of (bySlot.get(it.slot) || [])) state.equipped.delete(other.id);
+          state.equipped.add(id);
+          ids.push(id);
+        }
+        await ensureMeshesLoaded(ids);      // 未加载过的网格按需补上
+        syncEquipCheckboxes();
+        applyEquipmentVisibility();
+      };
+      row.appendChild(b);
+    }
+    const clr = document.createElement('button');
+    clr.className = 'chip';
+    clr.textContent = '全不穿';
+    clr.onclick = () => { state.equipped.clear(); syncEquipCheckboxes(); applyEquipmentVisibility(); };
+    row.appendChild(clr);
+    box.appendChild(row);
+    el.appendChild(box);
+  }
+
+  // ---- 按槽位分组 ----
+  const order = ['Head', 'Cape', 'Body', 'Gloves', 'Leg', 'Item0', 'Horse', 'Other'];
+  const label = { Head: '头部', Cape: '披风', Body: '身体', Gloves: '手',
+                  Leg: '腿脚', Item0: '手持', Horse: '坐骑', Other: '其他' };
   for (const slot of order) {
-    const arr = groups.get(slot);
+    const arr = bySlot.get(slot);
     if (!arr) continue;
     const g = document.createElement('div');
     g.className = 'eq-group';
-    g.innerHTML = `<div class="gl">${label[slot] || slot}</div>`;
+    // ★ 同一槽位一次只能穿一件（这是游戏规则）——组内做互斥，避免多件重叠穿模
+    g.innerHTML = `<div class="gl">${label[slot] || slot}${arr.length > 1 ? ` · ${arr.length} 选 1` : ''}</div>`;
     for (const it of arr) {
-      const row = document.createElement('label');
-      row.className = 'eq';
+      const rowEl = document.createElement('label');
+      rowEl.className = 'eq';
       const cov = Object.keys(it.covers || {});
-      row.innerHTML = `<input type="checkbox" ${state.equipped.has(it.id) ? 'checked' : ''}>
-        <span class="nm" title="${it.id}">${it.name || it.id}</span>
-        <span class="covers">${cov.length ? cov.join('/') : ''}</span>`;
-      row.querySelector('input').onchange = e => {
-        if (e.target.checked) state.equipped.add(it.id);
-        else state.equipped.delete(it.id);
+      const alien = state._nonHuman.has(it.mesh);
+      const note = alien ? '非人形骨架（马/坐骑等），姿势不会正确'
+                         : (cov.length ? cov.join('/') : '');
+      rowEl.innerHTML = `<input type="checkbox" data-item="${it.id}" ${state.equipped.has(it.id) ? 'checked' : ''}>
+        <span class="nm" title="${it.id}${alien ? ' —— ' + note : ''}">${it.name || it.id}</span>
+        <span class="covers" ${alien ? 'style="color:#e6a35a"' : ''}>${alien ? '⚠坐骑' : note}</span>`;
+      rowEl.querySelector('input').onchange = async e => {
+        if (e.target.checked) {
+          for (const other of arr) if (other.id !== it.id) state.equipped.delete(other.id);
+          state.equipped.add(it.id);
+          await ensureMeshesLoaded([it.id]);    // 首次勾选时才去拉网格
+        } else {
+          state.equipped.delete(it.id);
+        }
+        syncEquipCheckboxes();
         applyEquipmentVisibility();
       };
-      g.appendChild(row);
+      g.appendChild(rowEl);
     }
     el.appendChild(g);
   }
-  if (!(mf.items || []).length) el.innerHTML = '<p class="hint">这个 mod 没有 items.xml 装备定义。</p>';
+  if (!items.length) {
+    el.innerHTML = '<p class="hint">这个 mod 没有 items.xml 装备定义 —— '
+      + '所有网格会直接显示（不做槽位与遮盖处理）。</p>';
+  }
+}
+
+/** 只同步勾选状态，不重建 DOM（保留滚动位置） */
+function syncEquipCheckboxes() {
+  $$('#equip-list input[data-item]').forEach(inp => {
+    inp.checked = state.equipped.has(inp.dataset.item);
+  });
 }
 
 /** 只重建「原版身体」那一部分 —— 换体型时不必重载 mod 的网格 */
 async function rebuildVanilla() {
-  const mf = state.manifest;
   state.scene = state.scene.filter(n => n.kind !== 'vanilla');
-  const van = mf.vanilla || { parts: {} };
-  const skinParts = activeSkin().parts || {};
-  const meshToSemantic = {};
-  for (const [sem, meshName] of Object.entries(skinParts)) meshToSemantic[meshName] = sem;
-  const wantMeshes = new Set(Object.values(skinParts));
-  for (const [meshName, info] of Object.entries(van.parts || {})) {
-    if (!wantMeshes.has(meshName)) continue;
-    const semantic = meshToSemantic[meshName] || meshName;
-    try {
-      const subs = await loader.loadMesh(info.file);
-      for (const s of subs) {
-        const node = {
-          key: `vanilla/${semantic}/${s.meta.name}`, mesh: meshName, name: s.meta.name,
-          kind: 'vanilla', group: semantic, partKey: semantic, item: null, subs: [s],
-          material: materialOf(s.meta.material), visible: state.showVanilla,
-        };
-        node.gpu = renderer.upload(node.subs);
-        for (const t of Object.values(node.material.textures || {})) {
-          renderer.texture(t.file, await loader.loadTexture(t.file));
-        }
-        state.scene.push(node);
-      }
-    } catch (e) { console.warn('原版部件加载失败', meshName, e); }
-  }
+  state.scene.push(...await loadVanillaNodes());
   applyEquipmentVisibility();
 }
 
@@ -776,6 +880,80 @@ async function fetchMods() {
   return r.json();
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/** 轮询服务端的烘焙进度，直到结束 */
+async function waitBake() {
+  for (;;) {
+    await sleep(900);
+    let st;
+    try {
+      st = await (await fetch('api/bake/status')).json();
+    } catch (_) { continue; }
+    setLoading(true, `烘焙中：${st.phase || '…'}`
+      + (st.log && st.log.length ? `\n最近：${st.log[st.log.length - 1]}` : ''));
+    if (!st.running) {
+      if (st.error) throw new Error(`烘焙失败：${st.error}`);
+      return;
+    }
+  }
+}
+
+/** 没烘焙过就让服务端烘一遍 —— 否则用户在下拉里选了只会看到 404 */
+async function ensureBaked(mod) {
+  setLoading(true, `${mod} 尚未烘焙，正在烘焙…\n首次需要 1~2 分钟（要读 4052 个动画的清单）`);
+  const r = await fetch(`api/bake?mod=${encodeURIComponent(mod)}`, { method: 'POST' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok && !j.state?.running) {
+    throw new Error(j.message || j.error || `烘焙请求失败 HTTP ${r.status}`);
+  }
+  await waitBake();
+}
+
+/** 默认穿戴：**每个槽位恰好一件**。
+ *
+ * 早先的实现是"把 items 全部勾上"，单个 mod 只有 3 件时看不出问题，
+ * 但 LVBU and DIAOCHAN 有 56 件、覆盖多个角色 —— 全勾上就是几十件重叠穿模。
+ * 有套装信息时优先穿第一套，再用"每槽位补第一件"兜住套装没覆盖的槽位。
+ */
+function pickEquipment(mf, eqParam) {
+  const eq = new Set();
+  const items = mf.items || [];
+  const byId = new Map(items.map(it => [it.id, it]));
+  if (eqParam === 'none') return eq;
+  if (eqParam && eqParam !== 'all') {
+    for (const id of eqParam.split(',')) if (id.trim()) eq.add(id.trim());
+    return eq;
+  }
+  const bySlot = new Map();
+  for (const it of items) {
+    if (!bySlot.has(it.slot)) bySlot.set(it.slot, []);
+    bySlot.get(it.slot).push(it);
+  }
+  // ★ 套内也必须按槽位互斥：实测 LVBU 的"黑珍珠"套里 heizhenzhuyifu 与
+  //   heizhenzhuyifuyuanban 都是 BodyArmor，整套照单全收会让两件衣服重叠穿模。
+  //   规则与手动勾选一致 —— 同一槽位后来者让位给先出现的。
+  const slotTaken = new Set();
+  const first = (mf.sets || [])[0];
+  if (first) {
+    for (const id of first.members) {
+      const it = byId.get(id);
+      if (!it || slotTaken.has(it.slot)) continue;
+      slotTaken.add(it.slot);
+      eq.add(id);
+    }
+  }
+  // ★ 只自动补「穿在人身上」的槽位。实测 LVBU 的 Horse 槽位是赤兔马、Other 是马具，
+  //   把它们默认穿上会让马和盔甲糊在人身上 —— 而且马用的是马骨架（骨索引 31），
+  //   人形骨架根本驱动不了，必然错乱。要看得手动勾。
+  const HUMAN_SLOTS = new Set(['Head', 'Cape', 'Body', 'Gloves', 'Leg']);
+  for (const [slot, arr] of bySlot) {
+    if (!HUMAN_SLOTS.has(slot)) continue;
+    if (!slotTaken.has(slot)) eq.add(arr[0].id);
+  }
+  return eq;
+}
+
 async function loadMod(name) {
   try {
     await loadModInner(name);
@@ -787,20 +965,26 @@ async function loadMod(name) {
 
 async function loadModInner(name) {
   setLoading(true, `加载 ${name}…`);
-  const mf = await loader.loadManifest(name);
+  let mf;
+  try {
+    mf = await loader.loadManifest(name);
+  } catch (e) {
+    // 先确认服务端确实认为它「没烘焙过」才烘 —— 否则任何 404（路径写错、名字不对）
+    // 都会触发一次两分钟的烘焙，非常难排查。
+    const info = (state._mods || []).find(m => m.name === name);
+    if (info && !info.baked) {
+      await ensureBaked(name);
+      mf = await loader.loadManifest(name);
+    } else {
+      throw e;
+    }
+  }
   state.manifest = mf;
   state.rig = new Rig(mf.skeleton);
   state.animList = mf.anims || [];
 
   // 默认装备：全部 mod 装备
-  const eqParam = params.get('equip');
-  state.equipped = new Set();
-  if (eqParam === 'none') { /* 空 */ }
-  else if (eqParam && eqParam !== 'all') {
-    for (const id of eqParam.split(',')) if (id.trim()) state.equipped.add(id.trim());
-  } else {
-    for (const it of mf.items || []) state.equipped.add(it.id);
-  }
+  state.equipped = pickEquipment(mf, params.get('equip'));
 
   await buildScene();
   renderEquipList();
@@ -845,11 +1029,13 @@ async function main() {
 
   let mods = [];
   try { mods = await fetchMods(); } catch (e) { console.warn(e); }
+  state._mods = mods;
   const sel = $('#mod-select');
   sel.innerHTML = '';
   for (const m of mods) {
     const o = document.createElement('option');
-    o.value = m.name; o.textContent = m.name;
+    o.value = m.name;
+    o.textContent = m.baked ? m.name : `${m.name}（未烘焙，选中后自动烘焙）`;
     sel.appendChild(o);
   }
   sel.onchange = () => { location.search = `?mod=${encodeURIComponent(sel.value)}`; };
@@ -893,7 +1079,10 @@ function loop(now) {
     render();
     fpsAcc += dt; fpsN++;
     if (fpsAcc > 0.5) {
-      $('#hud-fps').textContent = `${(fpsN / fpsAcc).toFixed(0)} fps`;
+      $('#hud-fps').innerHTML = `${(fpsN / fpsAcc).toFixed(0)} fps`
+        + (state.texPending > 0
+           ? `  <span style="color:#e6a35a">贴图 ${state.texTotal - state.texPending}/${state.texTotal}</span>`
+           : '');
       const vis = state.scene.filter(n => n.visible).length;
       const bad = !Number.isFinite(state.frame) || vis === 0;
       $('#hud-stats').innerHTML =

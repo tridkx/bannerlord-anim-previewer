@@ -29,6 +29,7 @@ uniform mat4 uProj;
 uniform mat4 uView;
 uniform mat4 uModel;
 uniform mat4 uBones[${MAX_BONES}];
+uniform int  uBoneCount;     // 实际骨架骨数，用来钳制越界索引
 uniform bool uSkinned;
 uniform bool uHasColor;
 
@@ -41,10 +42,16 @@ void main() {
   vec4 p = vec4(aPos, 1.0);
   vec3 n = aNormal;
   if (uSkinned) {
-    mat4 skin = aBoneWeight.x * uBones[int(aBoneIndex.x)]
-              + aBoneWeight.y * uBones[int(aBoneIndex.y)]
-              + aBoneWeight.z * uBones[int(aBoneIndex.z)]
-              + aBoneWeight.w * uBones[int(aBoneIndex.w)];
+    // ★ 权重必须归一化：部分 mod 的每顶点权重和不是 255（实测 LVBU and DIAOCHAN
+    //   低到 58%），直接当系数用会把模型整体缩放。
+    vec4 w = aBoneWeight;
+    float ws = w.x + w.y + w.z + w.w;
+    w = ws > 0.0001 ? w / ws : vec4(1.0, 0.0, 0.0, 0.0);
+    // ★ 索引必须钳制：该 mod 里有网格用到索引 31（马骨架），而 uBones 只有 28 项，
+    //   越界读取 uniform 数组在 WebGL 里是未定义行为（常见结果是顶点塌到原点）。
+    ivec4 bi = clamp(ivec4(aBoneIndex), ivec4(0), ivec4(uBoneCount - 1));
+    mat4 skin = w.x * uBones[bi.x] + w.y * uBones[bi.y]
+              + w.z * uBones[bi.z] + w.w * uBones[bi.w];
     p = skin * p;
     n = mat3(skin) * n;
   }
@@ -143,6 +150,7 @@ export class Renderer {
     this.gpu = new WeakMap();        // subs 数组 → GPU 资源
     this.texGpu = new Map();         // rel → GL texture
     this.stats = { drawCalls: 0, triangles: 0 };
+    this.boneCount = MAX_BONES;
     this.light = {
       // 装备页大气（Modules/Native/Atmospheres/item_scene_atmosphere.xml）：
       //   sun_altitude=70  sun_intesity=0.700  sun_color=1.0,0.932,0.891
@@ -310,6 +318,7 @@ export class Renderer {
     if (mat.alphaTestOn) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
 
+    gl.uniform1i(p.u('uBoneCount'), this.boneCount || MAX_BONES);
     gl.uniform1i(p.u('uSkinned'), (g.skinned && opts.skinned) ? 1 : 0);
     gl.uniform1i(p.u('uHasColor'), g.hasColor ? 1 : 0);
     gl.uniform1i(p.u('uTwoSided'), mat.twoSided ? 1 : 0);
@@ -353,6 +362,7 @@ export class Renderer {
     const gl = this.gl;
     const loc = this.prog.u('uBones');
     if (!loc) return;                       // shader 里被优化掉/链接失败，静默跳过而不是崩
+    this.boneCount = Math.min(mats.length, MAX_BONES);
     const flat = new Float32Array(MAX_BONES * 16);
     for (let i = 0; i < MAX_BONES; i++) {   // 默认单位阵，避免未用到的槽位是 0 矩阵
       flat[i * 16] = flat[i * 16 + 5] = flat[i * 16 + 10] = flat[i * 16 + 15] = 1;

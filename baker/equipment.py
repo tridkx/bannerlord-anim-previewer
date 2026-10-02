@@ -22,9 +22,11 @@ from pathlib import Path
 # items.xml 的 Type → 装备槽位
 TYPE_TO_SLOT = {
     "BodyArmor": "Body", "HeadArmor": "Head", "LegArmor": "Leg",
-    "ArmArmor": "Gloves", "Cape": "Cape", "Horse": "Horse",
-    "Shield": "Shield", "Bow": "Item0", "Crossbow": "Item0",
+    "ArmArmor": "Gloves", "HandArmor": "Gloves",     # 实测 mod 里用 HandArmor
+    "Cape": "Cape", "Horse": "Horse", "Shield": "Shield",
+    "Bow": "Item0", "Crossbow": "Item0", "Arrows": "Item1", "Bolts": "Item1",
     "OneHandedWeapon": "Item0", "TwoHandedWeapon": "Item0", "Polearm": "Item0",
+    "Goods": "Other", "Book": "Other", "Animal": "Horse",
 }
 SLOT_ORDER = ["Head", "Cape", "Body", "Gloves", "Leg", "Item0", "Horse"]
 SLOT_LABEL = {"Head": "头部", "Cape": "披风", "Body": "身体", "Gloves": "手",
@@ -163,3 +165,43 @@ def vanilla_skin_catalog(skins_xml: Path, prefer: str = "man") -> dict:
         if v["maturity"] == "adult":
             return v
     return next(iter(all_skins.values()))
+
+
+# --------------------------------------------------------------------------- 多套装备
+
+def detect_sets(items: list[dict], min_size: int = 2) -> list[dict]:
+    """把装备按命名前缀聚成「套」，供界面做「一键穿整套」。
+
+    一个 mod 里常有多套角色（实测 XianJian7Outfits = 月清疏 + 白茉晴两套、
+    LVBU and DIAOCHAN = 56 件多角色）。逐件勾选既慢又容易漏，
+    而命名上通常自带分组线索：`xj7_yue_body` / `xj7_yue_head` / `xj7_yue_feet`。
+
+    做法：取每个 id 的**下划线分段前缀**与**字符前缀**，保留能覆盖 >= min_size 件、
+    且不被更具体前缀完全覆盖的那些。要求至少分出 2 组才认为"这个 mod 有多套"。
+    """
+    ids = [it["id"] for it in items]
+    if len(ids) < min_size * 2:
+        return []
+    cover: dict[str, set] = {}
+    for i in ids:
+        parts = i.split("_")
+        for k in range(1, len(parts)):            # xj7 / xj7_yue
+            cover.setdefault("_".join(parts[:k]), set()).add(i)
+        for k in range(4, len(i)):                # 没有下划线时的兜底：lvbu…
+            cover.setdefault(i[:k], set()).add(i)
+
+    cands = {p: g for p, g in cover.items() if min_size <= len(g) < len(ids)}
+    # 只留"极大"前缀：若存在更长的前缀覆盖完全相同的一组，则短的那个没有信息量
+    keep: dict[str, set] = {}
+    for p, g in cands.items():
+        if any(len(q) > len(p) and cands.get(q) == g for q in cands):
+            continue
+        keep[p] = g
+
+    # 去掉被别的组完全包含的组（保留更具体的划分）
+    out = []
+    for p, g in sorted(keep.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if any(g < set(o["members"]) for o in out):
+            continue
+        out.append(dict(key=p, label=p, members=sorted(g)))
+    return out if len(out) >= 2 else []

@@ -166,7 +166,9 @@ button.on { background: var(--accent2); border-color: var(--accent2); color: #10
 .eq:hover { background: var(--panel2); }
 .eq input { flex: none; }
 .eq .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.eq .covers { color: var(--dim); font-size: 11px; flex: none; }
+.eq .covers { color: var(--dim); font-size: 11px; flex: none; max-width: 42%; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+.eq-group .gl.warnslot { color: var(--warn); }
 .skin-row {
   display: flex; align-items: center; gap: 7px; padding: 4px 6px;
   font-size: 12px; border-radius: 4px;

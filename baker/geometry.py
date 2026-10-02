@@ -186,17 +186,25 @@ def audit(subs: list[dict]) -> dict:
             report["materials"].append(s["material"])
         if s["bone_w"] is not None:
             tot = s["bone_w"].astype(np.int32).sum(1)
-            wsum_ok += int((np.abs(tot - 255) <= 1).sum())
+            # ★ 判据是"权重和接近满量程"，不是"恰好 255"。
+            #   实测原版/编辑器产出的数据里 254 与 253 才是主流
+            #   （LVBU and DIAOCHAN：254 占 68~80%、253 占 15~24%），
+            #   卡死在 255 会把正常数据大面积误报成"权重被截断"。
+            wsum_ok += int((np.abs(tot - 255) <= 3).sum())
             wsum_total += vc
             if s["bone_idx"] is not None:
                 max_bone = max(max_bone, int(s["bone_idx"].max()))
     report["weightsum_ok_ratio"] = (wsum_ok / wsum_total) if wsum_total else 1.0
     report["max_bone_index"] = max_bone
+    # 人形骨架只有 0..27；超出说明这个网格绑的不是人（实测马用 28..31）。
+    # 渲染器会钳制索引避免越界，但姿势必然不对 —— 标出来让界面提示使用者。
+    report["humanSkeleton"] = (max_bone <= 27)
     if wsum_total and report["weightsum_ok_ratio"] < 0.999:
+        bad = 1.0 - report["weightsum_ok_ratio"]
         report["warnings"].append(
-            f"每顶点 4 个 u8 权重之和 ==255 的占比只有 {report['weightsum_ok_ratio']*100:.2f}%"
-            " —— 引擎会退化成一整块跟随骨盆（实机表现：整个模型像刚体一起摇晃）。"
-            " 通常是打包时把 0..1 的 float 截断成了 uint8。")
+            f"有 {bad*100:.2f}% 的顶点权重和明显偏离满量程（<252）"
+            " —— 这类顶点会退化成一整块跟随骨盆（实机表现：局部像刚体一起摇晃）。"
+            " 通常是打包时把 0..1 的 float 截断成了 u8。")
     if max_bone > 27:
         report["warnings"].append(f"骨骼索引最大值 {max_bone} > 27 —— 超出人形骨架范围，蒙皮会错乱。")
     return report

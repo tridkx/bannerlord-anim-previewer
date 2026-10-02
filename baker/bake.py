@@ -155,7 +155,7 @@ def ensure_vanilla(force: bool = False) -> dict:
         if vdir.exists():
             shutil.rmtree(vdir, ignore_errors=True)
         exp = vdir / "_export"
-        pj = MB.exportmod(human, exp, all_mips=True)
+        pj = MB.exportmod(human, exp, all_mips=False)
         geo_out = vdir / "geo"
         parts = {}
         for m in pj["meshes"]:
@@ -178,7 +178,7 @@ def ensure_vanilla(force: bool = False) -> dict:
         try:
             bm = e.pack("body_materials")
             bexp = vdir / "_bm"
-            bpj = MB.exportmod(bm, bexp, all_mips=True)
+            bpj = MB.exportmod(bm, bexp, all_mips=False)
             for m in bpj.get("materials", []):
                 mats[m["name"]] = MAT.simplify_material(m)
             shutil.rmtree(bexp, ignore_errors=True)
@@ -226,7 +226,8 @@ def list_mods() -> list[dict]:
 
 def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
              force: bool = False, skin_prefer: str = "man",
-             skip_anims: bool = False, progress=None) -> dict:
+             skip_anims: bool = False, progress=None,
+             max_tex: int | None = None) -> dict:
     e = C.env()
     C.ensure_dirs()
     mod_dir = find_mod(mod)
@@ -242,7 +243,8 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
 
     # ---- 几何 / 材质 / 贴图 ----
     exp = out_dir / "_export"
-    pj = MB.exportmod(packs[0], exp, all_mips=True)
+    # 只要 mip0：解码与渲染都只用第一级，导出整条 mip 链纯属白做功（还更慢、更占磁盘）
+    pj = MB.exportmod(packs[0], exp, all_mips=False)
     st = pj["stats"]
     _log(f"  导出: {st['meshes']} 网格 / {st['submeshes']} 子网格 / "
          f"{st['vertices']} 顶点 / {st['triangles']} 三角")
@@ -275,6 +277,8 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
         GEO.write_meshpack(dst, subs)
         meshes.append(dict(mesh=m["name"], file=f"mods/{mod_name}/geo/{m['name']}.mbmg",
                            lod=m.get("lod", 0),
+                           humanSkeleton=a["humanSkeleton"],
+                           maxBoneIndex=a["max_bone_index"],
                            submeshes=[dict(name=s["name"], material=s["material"],
                                            vertices=len(s["pos"]),
                                            triangles=0 if s["tri"] is None else s["tri"].size // 3,
@@ -291,7 +295,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
     tex_src = exp / "tex"
     for t in pj.get("textures", []):
         try:
-            meta = MAT.export_texture(t, tex_src, tex_dir)
+            meta = MAT.export_texture(t, tex_src, tex_dir, max_size=max_tex)
             meta["file"] = f"mods/{mod_name}/tex/{meta['name']}.png"
             textures[meta["name"]] = meta
         except Exception as ex:
@@ -302,7 +306,8 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
     # ---- 装备定义 ----
     items = EQ.load_module_items(mod_dir, mod_name)
     items = [it for it in items if it["mesh"]]
-    _log(f"  装备件: {len(items)}")
+    sets = EQ.detect_sets(items)
+    _log(f"  装备件: {len(items)}" + (f"（识别出 {len(sets)} 套）" if sets else ""))
 
     # ---- 原版皮肤部件 ----
     vanilla = ensure_vanilla(force)
@@ -328,7 +333,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
     manifest = dict(
         format=1, mod=mod_name, modPath=str(mod_dir), builtAt=time.time(),
         meshes=meshes, materials=materials, textures=textures,
-        items=items, skeleton=rig_json, vanilla=vanilla,
+        items=items, sets=sets, skeleton=rig_json, vanilla=vanilla,
         skin=dict(name=skin["name"], parts=skin["parts"],
                   label=SK_LABELS.get(skin["name"], skin["name"])),
         skins=skins_view,

@@ -130,6 +130,36 @@ def decode_bc(data: bytes, w: int, h: int, fmt: str) -> np.ndarray:
         r = _bc4_channel(blk)
         img = _blocks_to_img(r[:, :, None], w, h, 1)
         return np.concatenate([img, img, img, np.full(img.shape[:2] + (1,), 255, np.uint8)], 2)
+    # 未压缩格式（LVBU and DIAOCHAN 里有 R8G8B8A8_UNORM）
+    RAW = {"R8G8B8A8_UNORM": 4, "R8G8B8A8_UNORM_SRGB": 4, "B8G8R8A8_UNORM": 4,
+           "R8G8B8_UNORM": 3, "B8G8R8_UNORM": 3, "R8_UNORM": 1, "A8_UNORM": 1,
+           "R16G16B16A16_FLOAT": 8, "R16G16B16A16_UNORM": 8, "R32_FLOAT": 4}
+    if f in RAW:
+        ch = RAW[f]
+        need = w * h * ch
+        if len(buf) < need:
+            raise ValueError(f"{fmt}: 数据不足（需要 {need} 字节，只有 {len(buf)}）")
+        a = buf[:need].reshape(h, w, ch)
+        if ch == 4:
+            if f.startswith("B8G8R8A8"):
+                a = a[..., [2, 1, 0, 3]]
+            return np.ascontiguousarray(a)
+        if ch == 3:
+            if f.startswith("B8G8R8"):
+                a = a[..., [2, 1, 0]]
+            return np.concatenate([a, np.full(a.shape[:2] + (1,), 255, np.uint8)], 2)
+        if ch == 1:
+            return np.concatenate([a, a, a, np.full(a.shape[:2] + (1,), 255, np.uint8)], 2)
+        # 16/32 位浮点：线性映射到 8 位（够预览用）
+        v = a.astype(np.float32)
+        if f.endswith("_FLOAT"):
+            v = np.clip(v, 0.0, 1.0) * 255.0
+        else:
+            v = np.clip(v / 257.0, 0, 255)
+        v = v.astype(np.uint8)
+        if v.shape[2] == 3:
+            v = np.concatenate([v, np.full(v.shape[:2] + (1,), 255, np.uint8)], 2)
+        return v
     raise ValueError(f"暂不支持的贴图格式: {fmt}")
 
 
@@ -172,7 +202,14 @@ def alpha_bleed(rgba: np.ndarray, rounds: int = 8) -> np.ndarray:
 
 # --------------------------------------------------------------------------- 贴图导出
 
-def export_texture(entry: dict, tex_dir: Path, out_dir: Path, force_rgba: bool = True) -> dict:
+# 预览用的贴图尺寸上限。4096² 的 RGBA 光解压就 64MB，而预览窗口通常只有几百像素宽 ——
+# 降到 2048 后解码与 GPU 上传都快 4 倍，肉眼几乎看不出差别。需要看细节时可调高
+# （环境变量 MB_PREVIEW_MAX_TEX 或 bake(max_tex=...)）。
+MAX_TEX = int(__import__("os").environ.get("MB_PREVIEW_MAX_TEX", "2048"))
+
+
+def export_texture(entry: dict, tex_dir: Path, out_dir: Path,
+                   max_size: int | None = None) -> dict:
     """把一条 texture 记录解出来写成 PNG，返回给查看器用的元数据。"""
     src = tex_dir / Path(entry["file"]).name
     raw = src.read_bytes()
@@ -183,11 +220,18 @@ def export_texture(entry: dict, tex_dir: Path, out_dir: Path, force_rgba: bool =
         off = int(entry["mipOffset"][0])
     size = int(entry["mipSize"][0]) if entry.get("mipSize") else len(raw) - off
     rgba = decode_bc(raw[off:off + size], w, h, fmt)
-    rgba = alpha_bleed(rgba)
+    rgba = alpha_bleed(rgba)          # ★ 必须在缩放之前做，否则透明区的白/黑会被平均进边缘
+    limit = MAX_TEX if max_size is None else max_size
+    ow, oh = w, h
+    if limit and max(w, h) > limit:
+        scale = limit / float(max(w, h))
+        nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+        rgba = np.asarray(Image.fromarray(rgba, "RGBA").resize((nw, nh), Image.LANCZOS))
+        w, h = nw, nh
     name = entry["name"]
     out_dir.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(rgba, "RGBA").save(out_dir / f"{name}.png")
-    return dict(name=name, width=w, height=h, format=fmt,
+    Image.fromarray(rgba, "RGBA").save(out_dir / f"{name}.png", optimize=False)
+    return dict(name=name, width=w, height=h, srcWidth=ow, srcHeight=oh, format=fmt,
                 hasAlpha=("has_alpha" in (entry.get("systemFlags") or [])),
                 srcMips=int(entry.get("mipCount") or 1))
 

@@ -17,10 +17,12 @@ import mimetypes
 import socket
 import threading
 import time
+import traceback
 import webbrowser
 from functools import partial
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import unquote, urlparse, parse_qs
 
 from .config import PROJECT_ROOT, DATA_DIR
 
@@ -34,6 +36,55 @@ MIME_OVERRIDE = {
     ".mban": "application/octet-stream",
     ".png": "image/png",
 }
+
+
+# --------------------------------------------------------------------------- 自动烘焙
+# 界面上选中一个还没烘焙过的 mod 时，服务端就地把它烘出来 ——
+# 否则用户在列表里选了却只看到 404，得回到命令行手动 bake。
+# 用后台线程 + 轮询状态，而不是让一个 HTTP 请求挂几分钟。
+
+_BAKE_LOCK = threading.Lock()
+_BAKE_STATE: dict = {"running": False, "mod": None, "phase": "", "error": None,
+                     "done": False, "log": []}
+
+
+def bake_state() -> dict:
+    with _BAKE_LOCK:
+        return dict(_BAKE_STATE)
+
+
+def _set_bake(**kw) -> None:
+    with _BAKE_LOCK:
+        _BAKE_STATE.update(kw)
+
+
+def _append_log(line: str) -> None:
+    with _BAKE_LOCK:
+        _BAKE_STATE["log"] = (_BAKE_STATE["log"] + [line])[-40:]
+
+
+def start_bake(mod: str) -> tuple[bool, str]:
+    st = bake_state()
+    if st["running"]:
+        return False, f"已有烘焙在进行中：{st['mod']}"
+    _set_bake(running=True, mod=mod, phase="准备中", error=None, done=False, log=[])
+
+    def worker():
+        from . import bake as B
+        try:
+            def prog(i, n, name):
+                _set_bake(phase=f"烘焙动画 {i}/{n}：{name}")
+                _append_log(name)
+            _set_bake(phase="导出几何 / 材质 / 贴图…")
+            B.bake_mod(mod, progress=prog)
+            _set_bake(running=False, done=True, phase="完成")
+        except Exception as e:
+            traceback.print_exc()
+            _set_bake(running=False, done=False, error=f"{type(e).__name__}: {e}",
+                      phase="失败")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True, "已开始"
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -61,9 +112,35 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/mods"):
             return self._api_mods()
+        if self.path.startswith("/api/bake/status"):
+            return self._json(bake_state())
+        if self.path.startswith("/api/bake"):
+            return self._api_bake()
         if self.path == "/" or self.path.startswith("/?"):
             self.path = "/index.html"
         return super().do_GET()
+
+    def do_POST(self):
+        if self.path.startswith("/api/bake"):
+            return self._api_bake()
+        self.send_error(404)
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _api_bake(self):
+        q = parse_qs(urlparse(self.path).query)
+        mod = (q.get("mod") or [""])[0]
+        if not mod:
+            return self._json({"ok": False, "error": "缺少 mod 参数"}, 400)
+        ok, msg = start_bake(mod)
+        return self._json({"ok": ok, "message": msg, "state": bake_state()},
+                          200 if ok else 409)
 
     def _api_mods(self):
         from . import bake as B
@@ -108,7 +185,10 @@ def serve(port: int = 8777, open_browser: bool = True, quiet: bool = False) -> N
 
     class H(Handler):
         def translate_path(self, path):
-            p = path.split("?", 1)[0].split("#", 1)[0]
+            # ★ 必须 unquote：mod 名可能含空格（实测 "LVBU and DIAOCHAN"），
+            #   浏览器会把空格发成 %20，不解码就永远 404 —— 而 404 又会触发
+            #   「未烘焙 → 自动烘焙」，表现为打开页面卡两分钟。
+            p = unquote(path.split("?", 1)[0].split("#", 1)[0])
             if p.startswith("/data/"):
                 rel = p[len("/data/"):]
                 return str(DATA_DIR / rel)
@@ -141,7 +221,7 @@ def serve_background(port: int = 8777) -> tuple[ThreadingHTTPServer, str]:
 
     class H(Handler):
         def translate_path(self, path):
-            p = path.split("?", 1)[0].split("#", 1)[0]
+            p = unquote(path.split("?", 1)[0].split("#", 1)[0])   # 见上：必须解码
             if p.startswith("/data/"):
                 return str(DATA_DIR / p[len("/data/"):])
             rel = p.lstrip("/") or "index.html"
