@@ -308,6 +308,46 @@ main = bi[np.arange(len(bi))[:, None], np.argsort(-bw, axis=1)[:, :1]].ravel()
 
 ---
 
+## 3.9 ★★★ 穿身甲后"手消失"：自定义种族的手长在身体网格上
+
+排查"游戏里 LVBU 装备的角色看不到手"的最终结论。**与游戏版本无关**，
+是**自定义种族的 skins.xml 结构**造成的。
+
+**关键字段**（`ModuleData/skins.xml` 的 `<skin>`）：
+
+| skin | skeleton | body_meta_mesh | hands_mesh |
+|---|---|---|---|
+| `man`（原版 human） | `human_skeleton` | `body_male_a` | **`hands_male_a`** |
+| `jingrenou`（JingRenOuRace） | `jingrenou_skeleton` | `jingrenou` | **`""` 空** |
+| `valerie`（ValerieRace） | `valerie_skeleton` | `valerie_body` | **`""` 空** |
+
+**网格实际引用了哪些骨**（`bones referenced`）才是判据：
+
+| 网格 | 引用的骨 | 含手骨 19/26 |
+|---|---|---|
+| 原版 `body_male_a`（躯干） | `[0..18,21..25]` | **✗ 不含** |
+| 原版 `hands_male_a`（手） | `[0,16,17,18,19,23,24,25,26]` | ✓ |
+| `jingrenou`（种族身体） | `[…,19,…,26]` | **✓ 含** |
+| `valerie_body` | `[…,19,…,26]` | **✓ 含** |
+
+**因果链**：
+
+1. 自定义种族**没有独立的手部网格**，手**长在 `body_meta_mesh` 上**；
+2. 身甲 `covers_body="true"` ⇒ 游戏隐藏 `body_meta_mesh`；
+3. 手**跟着身体一起被隐藏** ⇒ 角色没手。
+
+人类角色不受影响：躯干网格**不含手骨**，手是独立的 `hands_male_a`，
+`covers_body` 隐藏躯干时手照常显示。
+
+这也解释了为什么"**独立的手套/护腕还在，手掌却没了**" ——
+手套是独立网格不受影响，手掌长在身体上被一起隐藏。
+
+**两个解决方向**：
+- 用**人类角色**（帝国文化）穿这套装备 —— 立刻正常；
+- 给种族 mod 拆出**独立的手部网格**，`skins.xml` 里把 `hands_mesh` 指向它。
+
+---
+
 ## 4. 光照：量必须配平到 ≈1.0
 
 ```
