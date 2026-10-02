@@ -29,6 +29,42 @@ from . import geometry as GEO
 from . import material as MAT
 from . import mbtool as MB
 from . import skeleton as SK
+from PIL import Image
+
+
+# 原版身体/手在 tpac 里不带贴图（游戏运行时按肤色程序生成）。预览时按类别给兜底色，
+# 否则只能拿白图渲染 —— 看起来就像角色戴了一副白手套、眼睛是一片白。
+VANILLA_FALLBACK = {
+    "skin":      ((206, 160, 128, 255), "vanilla_skin_default"),
+    "hair":      (( 58,  44,  36, 255), "vanilla_hair_default"),
+    "beard":     (( 74,  58,  48, 255), "vanilla_beard_default"),
+    "eye":       ((196, 192, 188, 255), "vanilla_eye_default"),
+    "mouth":     ((168, 106,  98, 255), "vanilla_mouth_default"),
+    "brow":      (( 86,  64,  52, 255), "vanilla_brow_default"),
+    "underwear": ((214, 210, 204, 255), "vanilla_underwear_default"),
+}
+
+
+def vanilla_fallback(name: str) -> str | None:
+    """按材质名猜它该用什么兜底色（tpac 里没有贴图的那批）。"""
+    n = (name or "").lower()
+    if not n:
+        return None
+    if n.startswith(("body_", "head_")) or n.endswith("_skin") or n == "beard_skin":
+        return "skin"
+    if "hair" in n:
+        return "hair"
+    if "beard" in n:
+        return "beard"
+    if "eye" in n:
+        return "eye"
+    if "brow" in n:
+        return "brow"
+    if "mouth" in n:
+        return "mouth"
+    if "underwear" in n:
+        return "underwear"
+    return None
 
 
 def _log(msg: str) -> None:
@@ -147,6 +183,14 @@ def ensure_anims(entries: list[dict], force: bool = False, progress=None) -> lis
 # --------------------------------------------------------------------------- 共享：原版皮肤部件
 
 def ensure_vanilla(force: bool = False) -> dict:
+    """导出原版皮肤部件。
+
+    两个坑（都会让"没被装备盖住的原版部位"显示成**纯白**，看着像戴了白手套）：
+      1. human.tpac 里的网格**材质名是空的** —— 真正的材质跨包放在
+         `mat1/body_materials/`，本包内查不到。必须用 materialGuid 关联回来。
+      2. 原版身体材质在 tpac 里**一个贴图都没有**（游戏运行时按肤色/体型程序生成），
+         没有 albedo 就只能拿白图兜底。这里生成一张默认肤色给它。
+    """
     e = C.env()
     vdir = e.cache_dir / "vanilla"
     out = vdir / "vanilla.json"
@@ -156,36 +200,66 @@ def ensure_vanilla(force: bool = False) -> dict:
             shutil.rmtree(vdir, ignore_errors=True)
         exp = vdir / "_export"
         pj = MB.exportmod(human, exp, all_mips=False)
-        geo_out = vdir / "geo"
-        parts = {}
-        for m in pj["meshes"]:
-            src = exp / m["file"]
-            subs = GEO.parse_gdmb(src)
-            # 只保留 lod0（预览不需要低模）
-            subs = [s for s in subs if s["lod"] == 0] or subs
-            if not subs:
-                continue
-            dst = geo_out / f"{m['name']}.mbmg"
-            GEO.write_meshpack(dst, subs)
-            parts[m["name"]] = dict(
-                mesh=m["name"], file=f"cache/vanilla/geo/{m['name']}.mbmg",
-                triangles=sum(0 if s["tri"] is None else s["tri"].size // 3 for s in subs),
-                vertices=sum(len(s["pos"]) for s in subs))
-        shutil.rmtree(exp, ignore_errors=True)
 
-        # 原版身体材质（跨包引用：网格在 human.tpac，材质在 body_materials.tpac）
-        mats = {}
+        # ---- 跨包材质：GUID → 材质名/参数 ----
+        mats: dict = {}
+        mat_by_guid: dict = {}
         try:
             bm = e.pack("body_materials")
             bexp = vdir / "_bm"
             bpj = MB.exportmod(bm, bexp, all_mips=False)
             for m in bpj.get("materials", []):
                 mats[m["name"]] = MAT.simplify_material(m)
+                mat_by_guid[m["guid"]] = m["name"]
             shutil.rmtree(bexp, ignore_errors=True)
         except Exception as ex:
-            _log(f"  ! 原版身体材质读取失败（不影响几何预览）: {ex}")
-        out.write_text(json.dumps(dict(parts=parts, materials=mats), ensure_ascii=False),
-                       encoding="utf-8")
+            _log(f"  ! 原版身体材质读取失败（手/身体会显示成白色）: {ex}")
+
+        # ---- 兜底贴图：原版材质一个 albedo 都没有，按类别各生成一张纯色 ----
+        texdir = vdir / "tex"
+        texdir.mkdir(parents=True, exist_ok=True)
+        vtex = {}
+        for _kind, (rgba, tname) in VANILLA_FALLBACK.items():
+            Image.new("RGBA", (16, 16), rgba).save(texdir / f"{tname}.png")
+            vtex[tname] = dict(name=tname, width=16, height=16, format="RGBA",
+                               hasAlpha=False, file=f"cache/vanilla/tex/{tname}.png")
+
+        geo_out = vdir / "geo"
+        parts = {}
+        for m in pj["meshes"]:
+            src = exp / m["file"]
+            subs = GEO.parse_gdmb(src)
+            subs = [x for x in subs if x["lod"] == 0] or subs
+            if not subs:
+                continue
+            # ★ 用 GUID 把跨包的材质名补回来，否则 material 是空串
+            for x in subs:
+                if not x.get("material") and x.get("material_guid"):
+                    x["material"] = mat_by_guid.get(x["material_guid"], "")
+            dst = geo_out / f"{m['name']}.mbmg"
+            GEO.write_meshpack(dst, subs)
+            parts[m["name"]] = dict(
+                mesh=m["name"], file=f"cache/vanilla/geo/{m['name']}.mbmg",
+                materials=sorted({x.get("material") or "" for x in subs}),
+                triangles=sum(0 if x["tri"] is None else x["tri"].size // 3 for x in subs),
+                vertices=sum(len(x["pos"]) for x in subs))
+        shutil.rmtree(exp, ignore_errors=True)
+
+        # 只给真正用在身体部件上的材质挂兜底色（并按类别选颜色，
+        # 否则一刀切涂肤色会把眼睛也涂掉，看着像没长眼睛）
+        used = {mn for p in parts.values() for mn in p["materials"] if mn}
+        for name in used:
+            mat = mats.get(name)
+            if mat is None or mat["textures"].get("albedo"):
+                continue
+            kind = vanilla_fallback(name)
+            if kind:
+                mat["textures"]["albedo"] = VANILLA_FALLBACK[kind][1]
+                mat["_fallback"] = kind
+        out.write_text(json.dumps(
+            dict(parts=parts, materials=mats,
+                 textures=vtex),
+            ensure_ascii=False), encoding="utf-8")
     return json.loads(out.read_text(encoding="utf-8"))
 
 

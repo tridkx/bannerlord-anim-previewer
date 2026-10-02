@@ -179,14 +179,16 @@ function camEye() {
 
 /* --------------------------------------------------------------------------- 装配场景 */
 
-function materialOf(name) {
-  const m = state.manifest.materials[name];
+function materialOf(name, vanilla = false) {
+  const src = vanilla ? (state.manifest.vanilla?.materials || {}) : state.manifest.materials;
+  const texsrc = vanilla ? (state.manifest.vanilla?.textures || {}) : state.manifest.textures;
+  const m = src[name];
   if (!m) return { name, blendMode: 'no_alpha_blend', alphaTest: 0, twoSided: true,
                    textures: {}, skinning: true, alphaTestOn: false, useVertexColor: false };
   // 贴图名 → {file} 映射（渲染器只关心相对路径）
   const tex = {};
   for (const [role, tname] of Object.entries(m.textures || {})) {
-    const t = state.manifest.textures[tname];
+    const t = texsrc[tname];
     if (t) tex[role] = { name: tname, file: t.file };
   }
   return { ...m, textures: tex };
@@ -293,7 +295,7 @@ async function loadVanillaNodes() {
         const node = {
           key: `vanilla/${semantic}/${s.meta.name}`, mesh: meshName, name: s.meta.name,
           kind: 'vanilla', group: semantic, partKey: semantic, item: null, subs: [s],
-          material: materialOf(s.meta.material), visible: state.showVanilla,
+          material: materialOf(s.meta.material, true), visible: state.showVanilla,
         };
         node.gpu = renderer.upload(node.subs);
         out.push(node);
