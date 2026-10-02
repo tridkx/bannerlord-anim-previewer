@@ -303,7 +303,15 @@ export class Renderer {
     //   实测 mod 的头发贴图里完全不透明的像素可能只有 2.3%（Valerie），
     //   其余按 SRC_ALPHA 混合会让整头头发发虚 —— 而 alpha_test 的语义本就是二值化。
     //   想看"如果按半透明混合会怎样"可以用 ?blendtest=1 对比。
-    const cutout = mat.alphaTestOn && !opts.forceBlend;
+    // ★ 有些材质定义了 alphaTest 值却没勾 alphaTestOn —— 实测 LVBU 里有 5 个
+    //   （minyul 明玉护手、heizhenzhub 黑珍珠、minyuh、heizhenzhue、monvdejiemao）。
+    //   原版 50 个材质里这两个字段**永远一致**，说明是打包工具漏勾了。
+    //   只认 alphaTestOn 会让这些材质走半透明混合 —— 明玉护手整只发虚就是这么来的。
+    //   注意 1.0 是危险值（会丢弃全部 alpha<1 的像素，睫毛会整个消失），
+    //   所以只认 (0,1) 开区间里的阈值。
+    const atVal = mat.alphaTest || 0;
+    const useAlphaTest = !!mat.alphaTestOn || (atVal > 0.01 && atVal < 0.99);
+    const cutout = useAlphaTest && !opts.forceBlend;
     // ★ mat.opaque：贴图 alpha 基本全 1 的材质（即便 blendMode 写着 factor）也按不透明走。
     //   否则不写深度，双面材质的内表面会盖住外表面 —— 实测曹操的脸就是这样，
     //   正面能看到后脑勺内壳。没有该字段时退回原来的行为。
@@ -326,14 +334,14 @@ export class Renderer {
 
     // 镂空边缘的 alpha 在阈值附近时，mipmap 采样会让它逐帧时有时无（表现为边缘闪烁）。
     // 开 alpha-to-coverage 用覆盖率做软过渡；没开 MSAA 的上下文会自动忽略，无副作用。
-    if (mat.alphaTestOn) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    if (useAlphaTest) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
 
     gl.uniform1i(p.u('uBoneCount'), this.boneCount || MAX_BONES);
     gl.uniform1i(p.u('uSkinned'), (g.skinned && opts.skinned) ? 1 : 0);
     gl.uniform1i(p.u('uHasColor'), g.hasColor ? 1 : 0);
     gl.uniform1i(p.u('uTwoSided'), mat.twoSided ? 1 : 0);
-    gl.uniform1i(p.u('uAlphaTestOn'), mat.alphaTestOn ? 1 : 0);
+    gl.uniform1i(p.u('uAlphaTestOn'), useAlphaTest ? 1 : 0);
     gl.uniform1f(p.u('uAlphaTest'), mat.alphaTest || 0);
     gl.uniform1i(p.u('uUseVertexColor'), mat.useVertexColor ? 1 : 0);
     gl.uniform1i(p.u('uVertexColorAlpha'), mat.vertexColorAlpha === false ? 0 : 1);
