@@ -43,6 +43,7 @@ const state = {
   showVanilla: params.get('vanilla') !== '0',
   skinName: params.get('skin') || null,   // 原版体型对照（man/woman）
   only: params.get('only') || null,        // 只显示名字/材质匹配的网格（诊断用）
+  blendTest: params.get('blendtest') === '1',  // 诊断：让 alphaTest 材质也走半透明混合
   noAlphaTest: params.get('noalphatest') === '1',   // 诊断：关掉镂空看被丢弃的部分
   // 装备可见性
   equipped: new Set(),
@@ -463,7 +464,8 @@ function render() {
 function renderNode(n, opts) {
   const mat = state.noAlphaTest ? { ...n.material, alphaTestOn: false } : n.material;
   for (const g of n.gpu) {
-    renderer.drawSub(g, mat, { skinned: opts.skinned, debugMode: state.debugMode });
+    renderer.drawSub(g, mat, { skinned: opts.skinned, debugMode: state.debugMode,
+                               forceBlend: state.blendTest });
   }
 }
 
@@ -566,26 +568,13 @@ function renderEquipList() {
       b.className = 'chip';
       b.textContent = `${st.label} (${st.members.length})`;
       b.title = st.members.join('\n');
-      b.onclick = async () => {
-        // 穿整套 = 对这套里每件装备做一次「选中」，同槽位的旧装备自动让位
-        const ids = [];
-        for (const id of st.members) {
-          const it = byId.get(id);
-          if (!it) continue;
-          for (const other of (bySlot.get(it.slot) || [])) state.equipped.delete(other.id);
-          state.equipped.add(id);
-          ids.push(id);
-        }
-        await ensureMeshesLoaded(ids);      // 未加载过的网格按需补上
-        syncEquipCheckboxes();
-        applyEquipmentVisibility();
-      };
+      b.onclick = () => applySet(sets.indexOf(st));
       row.appendChild(b);
     }
     const clr = document.createElement('button');
     clr.className = 'chip';
     clr.textContent = '全不穿';
-    clr.onclick = () => { state.equipped.clear(); syncEquipCheckboxes(); applyEquipmentVisibility(); };
+    clr.onclick = () => applySet(-1);
     row.appendChild(clr);
     box.appendChild(row);
     el.appendChild(box);
@@ -622,6 +611,7 @@ function renderEquipList() {
         }
         syncEquipCheckboxes();
         applyEquipmentVisibility();
+        syncSetRow();
       };
       g.appendChild(rowEl);
     }
@@ -630,6 +620,67 @@ function renderEquipList() {
   if (!items.length) {
     el.innerHTML = '<p class="hint">这个 mod 没有 items.xml 装备定义 —— '
       + '所有网格会直接显示（不做槽位与遮盖处理）。</p>';
+  }
+}
+
+/** 穿第 idx 套（顶部换装器与装备页 chip 共用同一实现） */
+async function applySet(idx) {
+  const mf = state.manifest;
+  const sets = mf.sets || [];
+  const byId = state._byId || new Map((mf.items || []).map(it => [it.id, it]));
+  const bySlot = state._equipBySlot || new Map();
+  if (idx < 0) {                       // 全脱
+    state.equipped.clear();
+    syncEquipCheckboxes(); applyEquipmentVisibility(); syncSetRow();
+    return;
+  }
+  const st = sets[idx];
+  if (!st) return;
+  const ids = [];
+  for (const id of st.members) {
+    const it = byId.get(id);
+    if (!it) continue;
+    const arr = bySlot.get(it.slot) || [];
+    for (const other of arr) state.equipped.delete(other.id);
+    state.equipped.add(id);
+    ids.push(id);
+  }
+  // 这套没有覆盖到的槽位，用该槽位的第一件补齐（保持"每个槽位恰好一件"）
+  const HUMAN_SLOTS = new Set(['Head', 'Cape', 'Body', 'Gloves', 'Leg']);
+  const taken = new Set(ids.map(id => byId.get(id)?.slot).filter(Boolean));
+  for (const [slot, arr] of bySlot) {
+    if (!HUMAN_SLOTS.has(slot) || taken.has(slot)) continue;
+    state.equipped.add(arr[0].id); ids.push(arr[0].id);
+  }
+  await ensureMeshesLoaded(ids);
+  syncEquipCheckboxes(); applyEquipmentVisibility(); syncSetRow();
+}
+
+/** 顶部换装器的显示与选中态 */
+function syncSetRow(activeIdx = null) {
+  const mf = state.manifest;
+  const sets = mf.sets || [];
+  const row = $('#set-row'), sel = $('#set-select'), hint = $('#set-hint');
+  if (!row || !sel) return;
+  if (sets.length < 2) { row.classList.add('hidden'); if (hint) hint.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+  if (sel.options.length !== sets.length) {
+    sel.innerHTML = '';
+    sets.forEach((st, i) => {
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = `${st.label}（${st.members.length} 件）`;
+      sel.appendChild(o);
+    });
+  }
+  if (activeIdx !== null) sel.value = String(activeIdx);
+  const cur = state.equipped;
+  const matchIdx = sets.findIndex(st => st.members.every(id => cur.has(id)));
+  if (matchIdx >= 0) sel.value = String(matchIdx);
+  if (hint) {
+    hint.classList.remove('hidden');
+    hint.textContent = `识别到 ${sets.length} 套装备`
+      + (matchIdx >= 0 ? `，当前是「${sets[matchIdx].label}」` : '（当前为自定义搭配）');
   }
 }
 
@@ -739,6 +790,10 @@ function bindUI() {
 
   // 装备
   $('#show-vanilla').onchange = e => { state.showVanilla = e.target.checked; applyEquipmentVisibility(); };
+  const setSel = $('#set-select');
+  if (setSel) setSel.onchange = e => applySet(parseInt(e.target.value, 10));
+  const setNone = $('#set-none');
+  if (setNone) setNone.onclick = () => applySet(-1);
 
   // 显示
   $$('#debug-chips .chip').forEach(b => b.onclick = () => {
@@ -990,6 +1045,7 @@ async function loadModInner(name) {
   renderEquipList();
   renderSkinSelect();
   renderCatChips();
+  syncSetRow((mf.sets || []).length ? 0 : null);
   rebuildAnimList();
 
   const want = state.animKey || (state.animList.find(a => a.key === 'inventory_idle') || state.animList[0] || {}).key;

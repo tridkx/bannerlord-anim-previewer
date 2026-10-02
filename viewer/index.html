@@ -43,6 +43,13 @@
     <header>
       <h1>皮套预览器</h1>
       <select id="mod-select" title="切换 mod"></select>
+      <!-- 多套装备的切换器：放在最显眼的位置，不用点进任何标签页 -->
+      <div id="set-row" class="set-row hidden">
+        <label for="set-select">换装</label>
+        <select id="set-select" title="这个 mod 里识别到的整套装备"></select>
+        <button id="set-none" class="mini" title="全部脱掉">脱</button>
+      </div>
+      <div id="set-hint" class="set-hint hidden"></div>
     </header>
 
     <div class="tabs">

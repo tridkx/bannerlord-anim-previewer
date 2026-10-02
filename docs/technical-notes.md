@@ -189,6 +189,29 @@ rest = median(骨骼最大夹角(帧i, 帧i+1))  for i in 1..60
 
 ---
 
+## 3.5 ★★ `alpha_test` 材质必须走 Cutout，不能按半透明混合
+
+`blendMode` 是 `factor` 且 `shaderMatFlags` 含 `alpha_test` 的材质（实测原版有 340 个，
+包括**人发** `hair_male_c`、胡子 `beards_h` 与大量植被），正确处理是
+**alpha 只用来 discard、留下的像素当实心**，而不是再做一次 `SRC_ALPHA` 混合。
+
+判据（实测贴图的 alpha 分布）：
+
+| 贴图 | alpha<0.275（丢弃） | 半透明 | 完全不透明 |
+|---|---|---|---|
+| `yx_hair_d`（显示正常的那件） | 0% | 0% | **100%** |
+| `bai_hair_d` | 58% | 9.7% | 32% |
+| `pl1270_preps_hair_d` | 68% | **29.5%** | 仅 **2.3%** |
+
+最后一行是关键：**只有 2.3% 的像素完全不透明**，按 `SRC_ALPHA` 混合整头头发都会发虚。
+而 `alpha_test` 的语义本就是"二值化 alpha"，所以 Cutout 才是对的。
+
+实现：`blend = !alphaTestOn && blendMode !== 'no_alpha_blend'`，
+片元着色器在 discard 之后输出 `alpha = 1.0`。
+诊断开关：`?blendtest=1` 可以切回半透明混合做对比。
+
+---
+
 ## 4. 光照：量必须配平到 ≈1.0
 
 ```

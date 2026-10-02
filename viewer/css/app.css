@@ -92,6 +92,20 @@ body {
   width: 100%; background: var(--panel2); color: var(--fg);
   border: 1px solid var(--line); border-radius: 5px; padding: 5px 7px;
 }
+.set-row {
+  display: flex; align-items: center; gap: 6px; margin-top: 7px;
+}
+.set-row label { color: var(--accent); font-weight: 600; flex: none; font-size: 12px; }
+.set-row select {
+  flex: 1; min-width: 0; background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--accent); border-radius: 5px; padding: 5px 7px; font-size: 12px;
+}
+.set-row button.mini {
+  flex: none; padding: 5px 9px; font-size: 12px;
+}
+.set-hint { color: var(--dim); font-size: 11px; margin-top: 4px; line-height: 1.35; }
+.hidden { display: none !important; }
+
 .tabs { display: flex; border-bottom: 1px solid var(--line); }
 .tab {
   flex: 1; padding: 8px 0; background: transparent; border: 0;

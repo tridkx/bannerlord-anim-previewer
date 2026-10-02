@@ -89,6 +89,7 @@ uniform vec3 uLightColor;
 uniform vec3 uAmbientColor;
 uniform vec3 uCameraPos;
 uniform int  uDebugMode;     // 0=正常 1=仅反照率 2=法线 3=UV 4=仅光照
+uniform bool uCutout;        // alphaTest 材质：discard 之后按不透明输出
 uniform vec3 uTint;
 
 out vec4 fragColor;
@@ -129,7 +130,8 @@ void main() {
   vec3 lit = base.rgb * (amb + uLightColor * ndl) + specular;
   if (uDebugMode == 4) lit = amb + uLightColor * ndl;
 
-  fragColor = vec4(lit, base.a);
+  // Cutout：留下的像素当实心，避免"头发发虚"
+  fragColor = vec4(lit, uCutout ? 1.0 : base.a);
 }`;
 
 export class Renderer {
@@ -297,7 +299,12 @@ export class Renderer {
          p.u('uSpecTex'), p.u('uHasSpecTex'));
 
     // 混合模式 → GL 状态
-    const blend = mat.blendMode && mat.blendMode !== 'no_alpha_blend';
+    // ★ 有 alphaTest 的材质走 Cutout：alpha 只用来"挖形状"，留下的像素是实心的。
+    //   实测 mod 的头发贴图里完全不透明的像素可能只有 2.3%（Valerie），
+    //   其余按 SRC_ALPHA 混合会让整头头发发虚 —— 而 alpha_test 的语义本就是二值化。
+    //   想看"如果按半透明混合会怎样"可以用 ?blendtest=1 对比。
+    const cutout = mat.alphaTestOn && !opts.forceBlend;
+    const blend = !cutout && mat.blendMode && mat.blendMode !== 'no_alpha_blend';
     gl.depthMask(blend ? false : true);
     if (blend) {
       gl.enable(gl.BLEND);
@@ -329,6 +336,7 @@ export class Renderer {
     gl.uniform1f(p.u('uSpecStrength'), mat.useSpecular ? (normRel || specRel ? 0.35 : 0.10) : 0.0);
     gl.uniform1f(p.u('uGloss'), mat.specFromDiffuse ? 0.5 : 0.75);
     gl.uniform1i(p.u('uDebugMode'), opts.debugMode | 0);
+    gl.uniform1i(p.u('uCutout'), cutout ? 1 : 0);
     if (p.u('uTint')) gl.uniform3fv(p.u('uTint'), opts.tint || [1, 1, 1]);
 
     if (g.idx) {
