@@ -700,6 +700,7 @@ async function applySet(idx) {
   if (idx < 0) {                       // 全脱
     state.equipped.clear();
     syncEquipCheckboxes(); applyEquipmentVisibility(); syncSetRow();
+    refitCamera();
     return;
   }
   const st = sets[idx];
@@ -733,8 +734,14 @@ function syncSetRow(activeIdx = null) {
   if (!row || !sel) return;
   if (sets.length < 2) { row.classList.add('hidden'); if (hint) hint.classList.add('hidden'); return; }
   row.classList.remove('hidden');
-  if (sel.options.length !== sets.length) {
+  // ★ 第一项固定是「自定义搭配」。它的作用是让"脱光之后想再穿同一套"能触发 change ——
+  //   早先脱光后下拉仍停在原来那一套，再选同一个值 onchange 根本不触发，看起来就是"穿不上"。
+  if (sel.options.length !== sets.length + 1) {
     sel.innerHTML = '';
+    const none = document.createElement('option');
+    none.value = '-1';
+    none.textContent = '（自定义搭配 / 未穿戴）';
+    sel.appendChild(none);
     sets.forEach((st, i) => {
       const o = document.createElement('option');
       o.value = String(i);
@@ -742,14 +749,22 @@ function syncSetRow(activeIdx = null) {
       sel.appendChild(o);
     });
   }
-  if (activeIdx !== null) sel.value = String(activeIdx);
   const cur = state.equipped;
-  const matchIdx = sets.findIndex(st => st.members.every(id => cur.has(id)));
-  if (matchIdx >= 0) sel.value = String(matchIdx);
+  if (activeIdx !== null && activeIdx >= 0) {
+    sel.value = String(activeIdx);
+  } else {
+    // 当前穿戴与某一套完全一致就选中它，否则回到「自定义」项
+    const matchIdx = sets.findIndex(st => st.members.length > 0
+      && st.members.every(id => cur.has(id))
+      && [...cur].every(id => st.members.includes(id)));
+    sel.value = matchIdx >= 0 ? String(matchIdx) : '-1';
+  }
   if (hint) {
     hint.classList.remove('hidden');
-    hint.textContent = `识别到 ${sets.length} 套装备`
-      + (matchIdx >= 0 ? `，当前是「${sets[matchIdx].label}」` : '（当前为自定义搭配）');
+    const mi = sel.value === '-1' ? -1 : parseInt(sel.value, 10);
+    const n = state.equipped.size;
+    hint.textContent = `识别到 ${sets.length} 套装备 · 当前 `
+      + (mi >= 0 ? `「${sets[mi].label}」` : `自定义搭配（${n} 件）`);
   }
 }
 
@@ -858,7 +873,16 @@ function bindUI() {
   $$('#speed-chips .chip').forEach(b => b.onclick = () => setSpeed(b.dataset.speed));
 
   // 装备
-  $('#show-vanilla').onchange = e => { state.showVanilla = e.target.checked; applyEquipmentVisibility(); };
+  // 两个开关（顶部 / 装备页）双向同步
+  const setVanilla = (v) => {
+    state.showVanilla = v;
+    $$('#show-vanilla, #show-vanilla-top').forEach(c => { c.checked = v; });
+    applyEquipmentVisibility();
+  };
+  $$('#show-vanilla, #show-vanilla-top').forEach(c => {
+    c.checked = state.showVanilla;
+    c.onchange = e => setVanilla(e.target.checked);
+  });
   const setSel = $('#set-select');
   if (setSel) setSel.onchange = e => applySet(parseInt(e.target.value, 10));
   const setNone = $('#set-none');

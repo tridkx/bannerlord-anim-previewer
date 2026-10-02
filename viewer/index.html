@@ -50,6 +50,12 @@
         <button id="set-none" class="mini" title="全部脱掉">脱</button>
       </div>
       <div id="set-hint" class="set-hint hidden"></div>
+      <!-- 原版资产开关：放在这里而不是塞在「装备」页底部（那里被部件列表挤到看不见） -->
+      <div class="row" id="vanilla-row" style="margin:8px 0 0">
+        <label class="dim" title="关掉后只看自己的装备，不显示原版身体/手/头">
+          <input type="checkbox" id="show-vanilla-top" checked> 显示原版身体/手/头
+        </label>
+      </div>
     </header>
 
     <div class="tabs">
@@ -108,7 +114,7 @@
       <p class="hint">带 <b class="warn">露出</b> 标记的是<b>没被任何装备遮住</b>的原版部件 —— 实机里它会直接露出来。</p>
       <div id="skin-list"></div>
       <div class="row">
-        <label class="dim"><input type="checkbox" id="show-vanilla" checked> 显示原版身体</label>
+        <label class="dim"><input type="checkbox" id="show-vanilla" checked> 显示原版身体（同上）</label>
       </div>
     </div>
 
