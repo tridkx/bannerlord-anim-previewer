@@ -78,7 +78,8 @@ body {
 
 /* ------------------------------- 侧栏 ------------------------------- */
 #panel {
-  width: 340px; flex: none; background: var(--panel);
+  /* 响应式：窄窗口下别把 3D 视图挤成一条缝（实测 460px 视口 + 340px 面板 = 只剩 120px）*/
+  width: clamp(240px, 32vw, 350px); flex: none; background: var(--panel);
   border-left: 1px solid var(--line); display: flex; flex-direction: column;
   min-height: 0;
 }

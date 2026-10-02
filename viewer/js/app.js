@@ -41,6 +41,7 @@ const state = {
   showBones: params.get('bones') === '1',
   showGrid: params.get('grid') !== '0',
   showVanilla: params.get('vanilla') !== '0',
+  showOrphans: params.get('orphans') === '1',   // 显示 items.xml 里没有对应装备的网格
   skinName: params.get('skin') || null,   // 原版体型对照（man/woman）
   only: params.get('only') || null,        // 只显示名字/材质匹配的网格（诊断用）
   blendTest: params.get('blendtest') === '1',  // 诊断：让 alphaTest 材质也走半透明混合
@@ -132,14 +133,38 @@ function applyView(name) {
     const toe = j[4] || [0, 0, 0];
     if (v.focus === 'face') { state.cam.target = [head[0], head[1], head[2] - 0.02]; state.cam.dist = 0.5; }
     else { state.cam.target = [toe[0] * 0.5, toe[1], 0.12]; state.cam.dist = 0.7; }
-  } else if (rig) {
-    const lo = rig.bbox.lo, hi = rig.bbox.hi;
-    const h = hi[2] - lo[2];
-    state.cam.target = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2] + h * 0.52];
-    // 38° 垂直视场下要容纳整个人，距离约 高度/2/tan(19°) 再留 15% 边距
-    state.cam.dist = Math.max(1.2, (h / 2) / Math.tan(19 * Math.PI / 180) * 1.15);
+  } else {
+    refitCamera(true);      // 与换装后走同一套取景逻辑
   }
   $$('#viewbar .vb[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === name));
+}
+
+/** 按当前可见几何的三个维度重算相机距离与目标点（保持方位角/仰角不变）。
+ *  切换套装后必须调用 —— 吕布套和貂蝉套的体量差很多，沿用旧距离会只看得到局部。 */
+function refitCamera(keepAngles = true) {
+  // 兜底：把窗口尺寸异常的情况挡掉（见下方取景说明）
+  let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9], n = 0;
+  for (const node of state.scene) {
+    if (!node.visible) continue;
+    for (const s of node.subs) {
+      const b = s.meta.bbox;                 // [minx,miny,minz, maxx,maxy,maxz]
+      if (!b) continue;
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], b[k]);
+        hi[k] = Math.max(hi[k], b[k + 3]);
+      }
+      n++;
+    }
+  }
+  if (!n) return;
+  const h = Math.max(hi[2] - lo[2], 0.3);
+  state.cam.target = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2] + h * 0.52];
+  // ★ 只按**高度**取景。早先还按宽度算了一遍，结果窄窗口下（侧栏固定 340px，
+  //   视口 460px 时 3D 视图只剩 120px 宽）aspect 掉到 0.17，相机被推到 13 米外，
+  //   人物缩成一个小点。而"宽度"本身也不可靠 —— A-pose 的手臂展开就有 1.6m，
+  //   并不代表装备真的那么宽。
+  state.cam.dist = Math.max(1.2, (h / 2) / Math.tan(19 * Math.PI / 180) * 1.2);
+  if (!keepAngles) { state.cam.az = 0; state.cam.el = 6; }
 }
 
 function camEye() {
@@ -283,6 +308,14 @@ async function loadVanillaNodes() {
 async function ensureMeshesLoaded(itemIds) {
   const need = [];
   for (const id of itemIds) {
+    // 孤儿网格用 __orphan__<mesh> 作为伪 id（它们没有对应的 item）
+    if (id.startsWith('__orphan__')) {
+      const mesh = id.slice('__orphan__'.length);
+      if (state.scene.some(n => n.kind === 'mod' && n.mesh === mesh)) continue;
+      const m = state._meshIndex.get(mesh);
+      if (m) need.push([m, null]);
+      continue;
+    }
     const it = state._byId.get(id);
     if (!it) continue;
     if (state.scene.some(n => n.kind === 'mod' && n.item && n.item.id === id)) continue;
@@ -312,8 +345,15 @@ function applyEquipmentVisibility() {
   }
   state.hiddenMeshes = hidden;
   for (const n of state.scene) {
-    if (n.kind === 'mod') n.visible = !n.item || state.equipped.has(n.item.id);
-    else n.visible = state.showVanilla && !hidden.has(n.partKey);
+    if (n.kind === 'mod') {
+      // ★ 没有对应装备的网格（items.xml 里查不到）默认隐藏。
+      //   早先写成 `!n.item || 已装备`，结果这类网格永远可见 ——
+      //   实测 LVBU and DIAOCHAN 有个 mn_cubk_tui 就属于这种，切多少套它都赖在场上。
+      //   现在交给单独的开关 state.showOrphans 控制（界面「未关联装备的网格」一组）。
+      n.visible = n.item ? state.equipped.has(n.item.id) : state.showOrphans;
+    } else {
+      n.visible = state.showVanilla && !hidden.has(n.partKey);
+    }
   }
   renderSkinList(equippedItems, hidden);
 }
@@ -612,15 +652,41 @@ function renderEquipList() {
         syncEquipCheckboxes();
         applyEquipmentVisibility();
         syncSetRow();
+        refitCamera();
       };
       g.appendChild(rowEl);
     }
+    el.appendChild(g);
+  }
+  // ---- 未关联装备的网格（items.xml 里没有定义的那些）----
+  const orphans = (mf.meshes || []).filter(m => !itemByMeshHas(mf, m.mesh));
+  if (orphans.length) {
+    const g = document.createElement('div');
+    g.className = 'eq-group';
+    g.innerHTML = `<div class="gl">未关联装备的网格 · ${orphans.length}</div>`
+      + '<p class="hint" style="margin:2px 0 6px">这些网格在 items.xml 里找不到对应装备，'
+      + '默认不显示（多半是作者留下的备用件/零件）。</p>';
+    const row = document.createElement('label');
+    row.className = 'eq';
+    row.innerHTML = `<input type="checkbox" id="show-orphans" ${state.showOrphans ? 'checked' : ''}>
+      <span class="nm">显示它们</span>
+      <span class="covers">${orphans.map(m => m.mesh).join(', ').slice(0, 40)}</span>`;
+    row.querySelector('input').onchange = async e => {
+      state.showOrphans = e.target.checked;
+      await ensureMeshesLoaded(orphans.map(m => `__orphan__${m.mesh}`));
+      applyEquipmentVisibility();
+    };
+    g.appendChild(row);
     el.appendChild(g);
   }
   if (!items.length) {
     el.innerHTML = '<p class="hint">这个 mod 没有 items.xml 装备定义 —— '
       + '所有网格会直接显示（不做槽位与遮盖处理）。</p>';
   }
+}
+
+function itemByMeshHas(mf, mesh) {
+  return (mf.items || []).some(it => it.mesh === mesh);
 }
 
 /** 穿第 idx 套（顶部换装器与装备页 chip 共用同一实现） */
@@ -636,6 +702,9 @@ async function applySet(idx) {
   }
   const st = sets[idx];
   if (!st) return;
+  // ★ 必须先清空再穿。早先只是"逐件覆盖"，于是上一套里不与新套冲突的槽位会留下来 ——
+  //   实测切到貂蝉套时，上一套 mn_cubk_ 的披风（Cape 槽，貂蝉套没有）一直挂在身上。
+  state.equipped.clear();
   const ids = [];
   for (const id of st.members) {
     const it = byId.get(id);
@@ -645,15 +714,13 @@ async function applySet(idx) {
     state.equipped.add(id);
     ids.push(id);
   }
-  // 这套没有覆盖到的槽位，用该槽位的第一件补齐（保持"每个槽位恰好一件"）
-  const HUMAN_SLOTS = new Set(['Head', 'Cape', 'Body', 'Gloves', 'Leg']);
-  const taken = new Set(ids.map(id => byId.get(id)?.slot).filter(Boolean));
-  for (const [slot, arr] of bySlot) {
-    if (!HUMAN_SLOTS.has(slot) || taken.has(slot)) continue;
-    state.equipped.add(arr[0].id); ids.push(arr[0].id);
-  }
+  // ★ 严格只穿这一套：这套没定义的槽位就空着。
+  //   早先会用「全局该槽位的第一件」补齐，结果切到貂蝉套时会把别的套的披风也穿上
+  //   （实测 mn_cubk_chibang 一直赖在场上），看到的根本不是这一套。
+  //   空着的槽位会让原版身体/皮肤露出来 —— 那正是这套装备真实的实机样子。
   await ensureMeshesLoaded(ids);
   syncEquipCheckboxes(); applyEquipmentVisibility(); syncSetRow();
+  refitCamera();          // 换了一套就该重新取景，否则只看得到局部
 }
 
 /** 顶部换装器的显示与选中态 */
@@ -991,20 +1058,21 @@ function pickEquipment(mf, eqParam) {
   const slotTaken = new Set();
   const first = (mf.sets || [])[0];
   if (first) {
+    // 有套装信息：严格穿这一套（同槽位只留先出现的那个）
     for (const id of first.members) {
       const it = byId.get(id);
       if (!it || slotTaken.has(it.slot)) continue;
       slotTaken.add(it.slot);
       eq.add(id);
     }
+    return eq;
   }
-  // ★ 只自动补「穿在人身上」的槽位。实测 LVBU 的 Horse 槽位是赤兔马、Other 是马具，
-  //   把它们默认穿上会让马和盔甲糊在人身上 —— 而且马用的是马骨架（骨索引 31），
-  //   人形骨架根本驱动不了，必然错乱。要看得手动勾。
+  // 没有套装信息（单套 mod）：每个「穿在人身上」的槽位取第一件。
+  // ★ Horse/Other 不自动穿 —— 实测 LVBU 的 Horse 是赤兔马、Other 是马具，
+  //   它们用马骨架（骨索引 31），人形骨架驱动不了，穿上必然错乱。
   const HUMAN_SLOTS = new Set(['Head', 'Cape', 'Body', 'Gloves', 'Leg']);
   for (const [slot, arr] of bySlot) {
-    if (!HUMAN_SLOTS.has(slot)) continue;
-    if (!slotTaken.has(slot)) eq.add(arr[0].id);
+    if (HUMAN_SLOTS.has(slot)) eq.add(arr[0].id);
   }
   return eq;
 }
@@ -1120,6 +1188,11 @@ async function main() {
     get visibleMeshes() { return state.scene.filter(n => n.visible).length; },
     setSpeed: (v) => window.setSpeed(v),
     view: (n) => applyView(n),
+    // 换装：set(索引) / 或直接给装备 id 列表
+    set: (i) => applySet(i),
+    wear: (ids) => { state.equipped = new Set(ids); return ensureMeshesLoaded(ids)
+                       .then(() => { syncEquipCheckboxes(); applyEquipmentVisibility(); syncSetRow(); }); },
+    sets: () => (state.manifest?.sets || []).map((st, i) => ({ i, label: st.label, members: st.members })),
   };
 
   lastT = performance.now();
