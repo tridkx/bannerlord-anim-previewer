@@ -231,9 +231,15 @@ def export_texture(entry: dict, tex_dir: Path, out_dir: Path,
     name = entry["name"]
     out_dir.mkdir(parents=True, exist_ok=True)
     Image.fromarray(rgba, "RGBA").save(out_dir / f"{name}.png", optimize=False)
+    # ★ alpha 分布：给「这个材质到底算不算半透明」提供依据。
+    #   实测曹操的脸（caocaoc）贴图 alpha 全是 1.0 却因为 blendMode=factor
+    #   被当成半透明 → 不写深度 → 双面材质的内表面盖住外表面（看到后脑勺内壳）。
+    a = rgba[:, :, 3].astype(np.float32) / 255.0
     return dict(name=name, width=w, height=h, srcWidth=ow, srcHeight=oh, format=fmt,
                 hasAlpha=("has_alpha" in (entry.get("systemFlags") or [])),
-                srcMips=int(entry.get("mipCount") or 1))
+                srcMips=int(entry.get("mipCount") or 1),
+                alphaMedian=float(np.median(a)),
+                alphaLow=float((a < 0.5).mean()))
 
 
 # --------------------------------------------------------------------------- 材质

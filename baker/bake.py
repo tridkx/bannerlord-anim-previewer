@@ -377,6 +377,17 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
 
     shutil.rmtree(exp, ignore_errors=True)
 
+    # ★ 判断材质「实际是否不透明」。blendMode=factor 的材质里有很多贴图 alpha 基本全 1
+    #   （实测曹操的脸），它们该照常写深度；否则双面材质的内表面会盖住外表面。
+    #   真正半透明的（纱、头发边缘）alpha 会有大量中低值，仍按混合处理。
+    for _name, _mat in materials.items():
+        _alb = (_mat.get("textures") or {}).get("albedo")
+        _t = textures.get(_alb) if _alb else None
+        if _t and "alphaMedian" in _t:
+            _mat["opaque"] = bool(_t["alphaMedian"] > 0.9 and _t["alphaLow"] < 0.05)
+        else:
+            _mat["opaque"] = _mat.get("blendMode") == "no_alpha_blend"
+
     # ---- 装备定义 ----
     items = EQ.load_module_items(mod_dir, mod_name)
     items = [it for it in items if it["mesh"]]

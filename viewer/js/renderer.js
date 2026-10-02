@@ -304,7 +304,11 @@ export class Renderer {
     //   其余按 SRC_ALPHA 混合会让整头头发发虚 —— 而 alpha_test 的语义本就是二值化。
     //   想看"如果按半透明混合会怎样"可以用 ?blendtest=1 对比。
     const cutout = mat.alphaTestOn && !opts.forceBlend;
-    const blend = !cutout && mat.blendMode && mat.blendMode !== 'no_alpha_blend';
+    // ★ mat.opaque：贴图 alpha 基本全 1 的材质（即便 blendMode 写着 factor）也按不透明走。
+    //   否则不写深度，双面材质的内表面会盖住外表面 —— 实测曹操的脸就是这样，
+    //   正面能看到后脑勺内壳。没有该字段时退回原来的行为。
+    const blend = !cutout && mat.opaque !== true
+                  && mat.blendMode && mat.blendMode !== 'no_alpha_blend';
     gl.depthMask(blend ? false : true);
     if (blend) {
       gl.enable(gl.BLEND);
