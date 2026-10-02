@@ -8,7 +8,8 @@
 </head>
 <body>
 <div id="app">
-  <!-- ===================== 左侧：3D 视图 ===================== -->
+
+  <!-- ======================= 左侧：3D 视图 ======================= -->
   <section id="stage">
     <canvas id="gl"></canvas>
 
@@ -22,136 +23,163 @@
     </div>
 
     <div id="viewbar" class="hud">
-      <button data-view="front" class="vb">正</button>
-      <button data-view="back" class="vb">背</button>
-      <button data-view="left" class="vb">左</button>
+      <button data-view="front" class="vb on">正</button>
+      <button data-view="back"  class="vb">背</button>
+      <button data-view="left"  class="vb">左</button>
       <button data-view="right" class="vb">右</button>
-      <button data-view="top" class="vb">顶</button>
-      <button data-view="face" class="vb">脸</button>
-      <button data-view="feet" class="vb">脚</button>
-      <span class="sep"></span>
-      <button id="btn-bones" class="vb" title="显示骨骼">骨</button>
-      <button id="btn-grid" class="vb" title="显示地面网格">格</button>
+      <button data-view="top"   class="vb">顶</button>
+      <button data-view="face"  class="vb">脸</button>
+      <button data-view="feet"  class="vb">脚</button>
+      <span class="vbsep"></span>
+      <button id="btn-bones" class="vb" title="显示骨骼线框 (B)">骨</button>
+      <button id="btn-grid"  class="vb on" title="显示地面网格 (G)">格</button>
     </div>
 
-    <div id="loading" class="overlay hidden"><div class="spinner"></div><div id="loading-text">加载中…</div></div>
+    <div id="loading" class="overlay hidden">
+      <div class="spinner"></div>
+      <div id="loading-text">加载中…</div>
+    </div>
     <div id="toast" class="toast hidden"></div>
   </section>
 
-  <!-- ===================== 右侧：控制面板 ===================== -->
+  <!-- ======================= 右侧：控制面板 ======================= -->
   <aside id="panel">
-    <header>
+
+    <!-- ---------- 固定顶部：永远可见，不随内容滚动 ---------- -->
+    <header class="panel-head">
       <h1>皮套预览器</h1>
       <select id="mod-select" title="切换 mod"></select>
-      <!-- 多套装备的切换器：放在最显眼的位置，不用点进任何标签页 -->
+
       <div id="set-row" class="set-row hidden">
         <label for="set-select">换装</label>
-        <select id="set-select" title="这个 mod 里识别到的整套装备"></select>
+        <select id="set-select" title="这个 mod 里识别到的整套装备（按命名前缀自动分组）"></select>
         <button id="set-none" class="mini" title="全部脱掉">脱</button>
       </div>
       <div id="set-hint" class="set-hint hidden"></div>
-      <!-- 原版资产开关：放在这里而不是塞在「装备」页底部（那里被部件列表挤到看不见） -->
-      <div class="row" id="vanilla-row" style="margin:8px 0 0">
-        <label class="dim" title="关掉后只看自己的装备，不显示原版身体/手/头">
-          <input type="checkbox" id="show-vanilla-top" checked> 显示原版身体/手/头
-          <span class="dim" style="font-weight:400">（关掉后没被 mod 覆盖的部位会空掉）</span>
-        </label>
-      </div>
+
+      <label class="switch-row" title="关掉后只看自己的装备；没被 mod 覆盖的部位会空掉，那是正常的">
+        <input type="checkbox" id="show-vanilla-top" checked>
+        <span>显示原版身体 / 手 / 头</span>
+      </label>
     </header>
 
-    <div class="tabs">
-      <button data-tab="anim" class="tab active">动画</button>
+    <!-- ---------- 标签栏 ---------- -->
+    <nav class="tabs">
+      <button data-tab="anim"  class="tab active">动画</button>
       <button data-tab="equip" class="tab">装备</button>
-      <button data-tab="view" class="tab">显示</button>
-      <button data-tab="diag" class="tab">诊断</button>
-    </div>
+      <button data-tab="view"  class="tab">显示</button>
+      <button data-tab="diag"  class="tab">诊断</button>
+    </nav>
 
-    <!-- ---------- 动画 ---------- -->
-    <div class="tabpane active" id="pane-anim">
-      <div class="row">
-        <input id="anim-search" type="search" placeholder="搜索动画 / 动作名（如 待机、走路、inventory）">
-      </div>
-      <div class="row chips" id="cat-chips"></div>
-      <div class="list" id="anim-list"></div>
-      <div class="player">
-        <div class="row">
-          <button id="btn-play" class="primary">暂停</button>
-          <button id="btn-loop" class="on" title="循环播放">循环</button>
-          <span class="dim" id="anim-info">—</span>
-        </div>
-        <input id="timeline" type="range" min="0" max="100" value="0" step="0.1">
-        <div class="row spread">
-          <span class="dim" id="time-label">0.00s</span>
-          <span class="dim" id="speed-label" title="1.00× = 按游戏 AnimationClip 声明的时长播放">1.00×</span>
-        </div>
-        <div class="row chips" id="speed-chips">
-          <button data-speed="0.25" class="chip">0.25×</button>
-          <button data-speed="0.5" class="chip">0.5×</button>
-          <button data-speed="1" class="chip active">1×</button>
-          <button data-speed="1.5" class="chip">1.5×</button>
-          <button data-speed="2" class="chip">2×</button>
-          <button data-speed="3" class="chip">3×</button>
-          <input id="speed-num" type="number" min="0.05" max="10" step="0.05" value="1"
-                 title="任意倍速（0.05 ~ 10），会自动记住">
-        </div>
-        <div class="row">
-          <input id="speed" type="range" min="0.05" max="4" step="0.05" value="1"
-                 title="拖动微调；1.00× = 按游戏 AnimationClip 声明的时长播放">
-        </div>
-        </div>
-      </div>
-    </div>
+    <!-- ---------- 可滚动内容区 ---------- -->
+    <div class="panes">
 
-    <!-- ---------- 装备 ---------- -->
-    <div class="tabpane" id="pane-equip">
-      <p class="hint">勾选要穿的装备。同一槽位一次只能穿一件 —— 这是游戏规则，此处照搬。</p>
-      <div id="equip-list"></div>
-      <h3>原版身体对照</h3>
-      <div class="row">
-        <label class="dim" style="flex:1">体型
-          <select id="skin-select" style="width:100%;margin-top:3px"></select>
+      <!-- ============ 动画 ============ -->
+      <div class="tabpane active" id="pane-anim">
+        <div class="row">
+          <input id="anim-search" type="search"
+                 placeholder="搜索动画 / 动作名（走路、待机、inventory…）">
+        </div>
+        <div class="row chips" id="cat-chips"></div>
+        <div class="list" id="anim-list"></div>
+
+        <div class="player">
+          <div class="row spread">
+            <button id="btn-play" class="primary">暂停</button>
+            <button id="btn-loop" class="on" title="循环播放">循环</button>
+            <span class="dim" id="anim-info">—</span>
+          </div>
+          <input id="timeline" type="range" min="0" max="100" value="0" step="0.1">
+          <div class="row spread">
+            <span class="dim" id="time-label">0.00s</span>
+            <span class="dim" id="speed-label"
+                  title="1.00× = 按游戏 AnimationClip 声明的时长播放；观感不同就自己调">1.00×</span>
+          </div>
+          <div class="row chips" id="speed-chips">
+            <button data-speed="0.25" class="chip">0.25×</button>
+            <button data-speed="0.5"  class="chip">0.5×</button>
+            <button data-speed="1"    class="chip active">1×</button>
+            <button data-speed="1.5"  class="chip">1.5×</button>
+            <button data-speed="2"    class="chip">2×</button>
+            <button data-speed="3"    class="chip">3×</button>
+            <input id="speed-num" type="number" min="0.05" max="10" step="0.05" value="1"
+                   title="任意倍速 0.05~10，会自动记住">
+          </div>
+          <div class="row">
+            <input id="speed" type="range" min="0.05" max="4" step="0.05" value="1"
+                   title="拖动微调">
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 装备 ============ -->
+      <div class="tabpane" id="pane-equip">
+        <p class="hint">同一槽位一次只能穿一件（游戏规则）。多套 mod 用顶部的「换装」整体切换。</p>
+        <div id="equip-list"></div>
+
+        <h3>原版身体对照</h3>
+        <div class="row">
+          <label class="dim" style="flex:1">体型
+            <select id="skin-select" style="width:100%;margin-top:3px"></select>
+          </label>
+        </div>
+        <p class="hint">标 <b class="warn">露出</b> 的是<b>没被任何装备遮住</b>的原版部件 ——
+          实机里它会直接露出来。注明「原版游戏资产」的表示本 mod 没提供该部位。</p>
+        <div id="skin-list"></div>
+        <label class="switch-row">
+          <input type="checkbox" id="show-vanilla" checked>
+          <span>显示原版身体（与顶部开关同步）</span>
         </label>
       </div>
-      <p class="hint">带 <b class="warn">露出</b> 标记的是<b>没被任何装备遮住</b>的原版部件 —— 实机里它会直接露出来。</p>
-      <div id="skin-list"></div>
-      <div class="row">
-        <label class="dim"><input type="checkbox" id="show-vanilla" checked> 显示原版身体（同上）</label>
-      </div>
-    </div>
 
-    <!-- ---------- 显示 ---------- -->
-    <div class="tabpane" id="pane-view">
-      <h3>调试视图</h3>
-      <div class="row chips" id="debug-chips">
-        <button data-debug="0" class="chip active">正常</button>
-        <button data-debug="1" class="chip">仅贴图</button>
-        <button data-debug="2" class="chip">法线</button>
-        <button data-debug="3" class="chip">UV</button>
-        <button data-debug="4" class="chip">仅光照</button>
-      </div>
-      <p class="hint">「仅贴图」用来判断颜色/UV 是否正确，排除光照干扰。</p>
-      <h3>光照</h3>
-      <div class="row chips" id="light-chips">
-        <button data-light="item" class="chip active">装备页</button>
-        <button data-light="day" class="chip">白天室外</button>
-        <button data-light="night" class="chip">夜晚</button>
-        <button data-light="studio" class="chip">摄影棚</button>
-      </div>
-      <h3>背景</h3>
-      <div class="row chips" id="bg-chips">
-        <button data-bg="dark" class="chip active">深灰</button>
-        <button data-bg="light" class="chip">浅灰</button>
-        <button data-bg="green" class="chip">绿幕</button>
-      </div>
-    </div>
+      <!-- ============ 显示 ============ -->
+      <div class="tabpane" id="pane-view">
+        <h3>调试视图</h3>
+        <div class="row chips" id="debug-chips">
+          <button data-debug="0" class="chip active">正常</button>
+          <button data-debug="1" class="chip">仅贴图</button>
+          <button data-debug="2" class="chip">法线</button>
+          <button data-debug="3" class="chip">UV</button>
+          <button data-debug="4" class="chip">仅光照</button>
+        </div>
+        <p class="hint">「仅贴图」用来判断颜色 / UV 是否正确，排除光照干扰。</p>
 
-    <!-- ---------- 诊断 ---------- -->
-    <div class="tabpane" id="pane-diag">
-      <div class="row"><button id="btn-diag" class="primary">运行诊断</button></div>
-      <div id="diag-out" class="diag"></div>
-    </div>
+        <h3>光照</h3>
+        <div class="row chips" id="light-chips">
+          <button data-light="item"   class="chip active">装备页</button>
+          <button data-light="day"    class="chip">白天室外</button>
+          <button data-light="night"  class="chip">夜晚</button>
+          <button data-light="studio" class="chip">摄影棚</button>
+        </div>
+
+        <h3>背景</h3>
+        <div class="row chips" id="bg-chips">
+          <button data-bg="dark"  class="chip active">深灰</button>
+          <button data-bg="light" class="chip">浅灰</button>
+          <button data-bg="green" class="chip">绿幕</button>
+        </div>
+
+        <h3>操作</h3>
+        <p class="hint">
+          左键拖动 = 转视角 · 滚轮 = 缩放 · 右键（或 Shift+左键）= 平移<br>
+          快捷键：<b>空格</b> 播放/暂停 · <b>B</b> 骨骼 · <b>G</b> 网格 ·
+          <b>1/2/3/4</b> 前/左/后/脸
+        </p>
+      </div>
+
+      <!-- ============ 诊断 ============ -->
+      <div class="tabpane" id="pane-diag">
+        <div class="row">
+          <button id="btn-diag" class="primary">运行诊断</button>
+          <span class="dim">检查蒙皮 / 材质 / 贴图 / 装备遮盖</span>
+        </div>
+        <div id="diag-out" class="diag"></div>
+      </div>
+
+    </div><!-- /.panes -->
   </aside>
 </div>
+
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

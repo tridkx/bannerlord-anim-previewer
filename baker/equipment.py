@@ -62,6 +62,16 @@ def parse_skins(path: Path) -> dict:
     return out
 
 
+def _clean_name(raw: str | None, fallback: str) -> str:
+    """剥掉 Bannerlord 本地化前缀：`{=mn_cubk_toubu}魔女的头部` → `魔女的头部`。"""
+    if not raw:
+        return fallback
+    t = raw.strip()
+    if t.startswith("{=") and "}" in t:
+        t = t.split("}", 1)[1].strip()
+    return t or fallback
+
+
 def parse_items(path: Path, module: str) -> list[dict]:
     """items.xml → 装备件列表（含遮盖标志）。"""
     try:
@@ -90,7 +100,8 @@ def parse_items(path: Path, module: str) -> list[dict]:
             hair_cover = armor.get("hair_cover_type")
             beard_cover = armor.get("beard_cover_type")
         items.append(dict(
-            id=iid, name=it.get("name") or iid, mesh=it.get("mesh") or "",
+            id=iid, name=_clean_name(it.get("name"), it.get("id") or ""),
+            mesh=it.get("mesh") or "",
             type=itype, slot=TYPE_TO_SLOT.get(itype, "Other"), module=module,
             covers=covers, hairCover=hair_cover, beardCover=beard_cover,
             culture=it.get("culture") or "", weight=float(it.get("weight") or 0),
