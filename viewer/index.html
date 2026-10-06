@@ -48,7 +48,10 @@
     <!-- ---------- 固定顶部：永远可见，不随内容滚动 ---------- -->
     <header class="panel-head">
       <h1>皮套预览器</h1>
-      <select id="mod-select" title="切换 mod"></select>
+      <div class="mod-row">
+        <select id="mod-select" title="切换 mod"></select>
+        <button id="btn-rebake" class="mini" title="重新读取当前 mod 的 tpac 并重建预览产物。改完 mod 后点这个，别只刷新页面——页面对已烘焙的 mod 不会自动重建。&#10;&#10;按住 Shift 点击 = 彻底重建（先清空 geo/ 与 tex/ 目录，清掉改名或删除网格后残留的旧文件）">重烘焙</button>
+      </div>
 
       <div id="set-row" class="set-row hidden">
         <label for="set-select">换装</label>

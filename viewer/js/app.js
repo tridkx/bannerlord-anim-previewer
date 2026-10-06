@@ -1074,14 +1074,61 @@ async function waitBake() {
 }
 
 /** 没烘焙过就让服务端烘一遍 —— 否则用户在下拉里选了只会看到 404 */
-async function ensureBaked(mod) {
+async function ensureBaked(mod, force = false) {
   setLoading(true, `${mod} 尚未烘焙，正在烘焙…\n首次需要 1~2 分钟（要读 4052 个动画的清单）`);
-  const r = await fetch(`api/bake?mod=${encodeURIComponent(mod)}`, { method: 'POST' });
+  const r = await fetch(`api/bake?mod=${encodeURIComponent(mod)}&force=${force ? 1 : 0}`, { method: 'POST' });
   const j = await r.json().catch(() => ({}));
   if (!r.ok && !j.state?.running) {
     throw new Error(j.message || j.error || `烘焙请求失败 HTTP ${r.status}`);
   }
   await waitBake();
+}
+
+/** 清空查看器的内存缓存。
+ *
+ *  ★ 这是"重烘焙"按钮能生效的关键：meshCache / texCache / animCache 都是
+ *    按相对路径做键的，重烘焙后路径一字不变，不清就永远命中旧对象。
+ *    （HTTP 层已经是 no-store，但那只管网络，管不到 JS 侧这几个 Map。）
+ */
+function clearLoaderCaches() {
+  const l = loader;
+  if (!l) return;
+  l.meshCache?.clear();
+  l.animCache?.clear();
+  l.texCache?.clear();
+  l.animMeta?.clear();
+}
+
+/** 手动重烘焙当前 mod（工具栏按钮）。烘完就地重载，不依赖刷新页面。
+ *
+ *  背景：bake_mod() 本身每次都全量重导出 tpac，从不比对 mtime；真正让人
+ *  看不到更新的是"触发"环节 —— 前端只在 manifest.json 404 时才烘焙，而
+ *  baked 判据只是文件存不存在。所以改完 mod 光刷新页面，预览不会有变化。
+ */
+async function rebakeCurrentMod(btn, ev) {
+  const name = state.mod;
+  if (!name) { toast('当前没有加载任何 mod'); return; }
+  const force = !!ev?.shiftKey;              // Shift 点击 = 彻底重建（清 geo/ + tex/）
+  const btn2 = btn || $('#btn-rebake');
+  if (btn2) btn2.disabled = true;
+  try {
+    // 直接调 ensureBaked 走 /api/bake，和首次自动烘焙完全同一条路径。
+    // 区别只在于这里无条件触发、不看 baked 标记。
+    await ensureBaked(name, force);
+    clearLoaderCaches();
+    // 就地重载：用 loadModInner 而非 loadMod —— 后者吞掉异常并弹 fatal，
+    // 那样重烘焙失败就变成整页错误页了，这里想让错误落到上面的 catch。
+    // loadModInner 会重新读 manifest + 重建场景，保持当前装备 / 动画选择。
+    await loadModInner(name);
+    toast(force
+      ? `已彻底重建 ${name}（清空过 geo/ 与 tex/）`
+      : `已重烘焙 ${name}`);
+  } catch (e) {
+    toast(`重烘焙失败：${e.message || e}`);
+    console.error(e);
+  } finally {
+    if (btn2) btn2.disabled = false;
+  }
 }
 
 /** 默认穿戴：**每个槽位恰好一件**。
@@ -1215,6 +1262,12 @@ async function main() {
     sel.appendChild(o);
   }
   sel.onchange = () => { location.search = `?mod=${encodeURIComponent(sel.value)}`; };
+
+  // 重烘焙按钮（普通点击 = 重烘；Shift+点击 = 彻底重建）
+  const rebakeBtn = $('#btn-rebake');
+  if (rebakeBtn) {
+    rebakeBtn.onclick = (ev) => rebakeCurrentMod(rebakeBtn, ev);
+  }
 
   const first = state.mod || (mods[0] && mods[0].name);
   if (!first) { setLoading(false); toast('没有找到可预览的 mod。先跑：mbpreview bake <mod>'); return; }

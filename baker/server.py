@@ -63,7 +63,7 @@ def _append_log(line: str) -> None:
         _BAKE_STATE["log"] = (_BAKE_STATE["log"] + [line])[-40:]
 
 
-def start_bake(mod: str) -> tuple[bool, str]:
+def start_bake(mod: str, force: bool = False) -> tuple[bool, str]:
     st = bake_state()
     if st["running"]:
         return False, f"已有烘焙在进行中：{st['mod']}"
@@ -76,7 +76,9 @@ def start_bake(mod: str) -> tuple[bool, str]:
                 _set_bake(phase=f"烘焙动画 {i}/{n}：{name}")
                 _append_log(name)
             _set_bake(phase="导出几何 / 材质 / 贴图…")
-            B.bake_mod(mod, progress=prog)
+            # force=True 会先清空 geo/ 与 tex/（彻底重建），用于清掉
+            # mod 改名或删除网格后残留、manifest 已不再引用的旧产物。
+            B.bake_mod(mod, force=force, progress=prog)
             _set_bake(running=False, done=True, phase="完成")
         except Exception as e:
             traceback.print_exc()
@@ -138,7 +140,8 @@ class Handler(SimpleHTTPRequestHandler):
         mod = (q.get("mod") or [""])[0]
         if not mod:
             return self._json({"ok": False, "error": "缺少 mod 参数"}, 400)
-        ok, msg = start_bake(mod)
+        force = (q.get("force") or ["0"])[0] in ("1", "true", "yes")
+        ok, msg = start_bake(mod, force=force)
         return self._json({"ok": ok, "message": msg, "state": bake_state()},
                           200 if ok else 409)
 

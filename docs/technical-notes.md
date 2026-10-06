@@ -402,6 +402,39 @@ global_ambient fog_ambient_color=0.517,0.708,1.000    env_map=mp_ruins_2_envmap
 | **`np.frombuffer` 只读** | 直接改会报错 | 需要写就 `.copy()` |
 | **GBK 控制台** | 打印中文/`²` 直接 `UnicodeEncodeError` | 脚本开头 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` |
 
+### 5.4 ★★ 改完 mod 预览没变化 —— 「有缓存，但缓存不校验新鲜度」
+
+**症状**：重新打包并安装 mod 后，打开预览器看到的还是旧模型；刷新页面也没用。
+
+**根因分三层，别混为一谈**（这点很容易说错）：
+
+| 层 | 有没有缓存 | 缓存的是什么 |
+|---|---|---|
+| `bake_mod()` 烘焙层 | **没有新鲜度判定**（每次全量重导出） | — |
+| HTTP 层 | 已禁用（`Cache-Control: no-store`） | — |
+| **触发层** | **有，且只看「文件存不存在」** | `data/mods/<mod>/manifest.json` |
+
+- **烘焙层是无辜的**：`bake_mod()` 不比对 mtime，`MB.exportmod()` 每次都重跑，所以**只要调用就必然产出新数据**。
+  （对比同文件的 `ensure_skeleton` / `ensure_catalog` / `ensure_vanilla`——那三个才有 `_fresh()` 判断，且缓存的都是**原版游戏资产**，与 mod 无关。）
+- **真正的问题在触发层**：`baked` 的判据就是 `manifest.json` 存不存在（`server.py`），
+  前端只在 `loadManifest()` **抛 404 时**才去查 `baked`，且**只有 `!baked` 才触发烘焙**。
+  所以 mod 更新 → `manifest.json` 依然存在 → `baked=true` → 永远不重烘 → 旧产物。
+
+**决定性判据**：如果这个缓存带新鲜度校验，mod 更新后应当自动重烘（表现为「更新后反而变慢几秒」）。
+**观察不到这个行为，本身就是缓存不校验新鲜度的证据。**
+
+**做法**：改完 mod 显式重烘，不要只刷新页面。
+界面顶部 mod 下拉框旁的「**重烘焙**」按钮即为此设；命令行等价物是 `mbpreview.bat bake <mod>`
+（不加 `--force` 也会全量重导出；`--force` 额外先清空 `geo/` `tex/`，用于回收残留文件）。
+
+> ⚠️ **前端还有第二层缓存**：`loader.meshCache / texCache / animCache` 是 JS 侧按相对路径做键的 Map。
+> `no-store` 只管网络，管不到这几个 Map——重载时路径一字不变，不清空就永远命中旧对象。
+> 所以任何"就地重载"都必须先 `clearLoaderCaches()`，否则按钮点了没反应。
+
+**副作用**：mod 改名或删除网格后，旧的 `.mbmg` / `.png` 会残留在 `geo/` `tex/`。
+不影响正确性（`manifest.json` 重写且只引用本次导出的条目），但白占磁盘、同名时有读到旧文件的风险。
+彻底重建（`--force` / Shift+点击）可清掉。
+
 ---
 
 ## 6. 与上一版预览器的差异
