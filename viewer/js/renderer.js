@@ -223,19 +223,32 @@ export class Renderer {
     return t;
   }
 
+  updateCloth(g, cloth, enabled) {
+    const gl = this.gl;
+    if (enabled) {
+      if (!g.clothPos) g.clothPos = gl.createBuffer();
+      if (!g.clothNormal) g.clothNormal = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.clothPos);
+      gl.bufferData(gl.ARRAY_BUFFER, cloth.position, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.clothNormal);
+      gl.bufferData(gl.ARRAY_BUFFER, cloth.normal, gl.DYNAMIC_DRAW);
+    }
+    g.clothActive = enabled;
+  }
+
   /** 画一个子网格 */
   drawSub(g, mat, opts) {
     const gl = this.gl, p = this.prog;
     const a = n => p.a(n);
 
     if (a('aPos') >= 0) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, g.pos);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.clothActive ? g.clothPos : g.pos);
       gl.enableVertexAttribArray(a('aPos'));
       gl.vertexAttribPointer(a('aPos'), 3, gl.FLOAT, false, 0, 0);
     }
     if (a('aNormal') >= 0) {
-      if (g.nrm) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, g.nrm);
+      if (g.nrm || g.clothActive) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, g.clothActive ? g.clothNormal : g.nrm);
         gl.enableVertexAttribArray(a('aNormal'));
         gl.vertexAttribPointer(a('aNormal'), 3, gl.FLOAT, false, 0, 0);
       } else {
@@ -338,13 +351,13 @@ export class Renderer {
     else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
 
     gl.uniform1i(p.u('uBoneCount'), this.boneCount || MAX_BONES);
-    gl.uniform1i(p.u('uSkinned'), (g.skinned && opts.skinned) ? 1 : 0);
+    gl.uniform1i(p.u('uSkinned'), (g.skinned && opts.skinned && !g.clothActive) ? 1 : 0);
     gl.uniform1i(p.u('uHasColor'), g.hasColor ? 1 : 0);
     gl.uniform1i(p.u('uTwoSided'), mat.twoSided ? 1 : 0);
     gl.uniform1i(p.u('uAlphaTestOn'), useAlphaTest ? 1 : 0);
     gl.uniform1f(p.u('uAlphaTest'), mat.alphaTest || 0);
     gl.uniform1i(p.u('uUseVertexColor'), mat.useVertexColor ? 1 : 0);
-    gl.uniform1i(p.u('uVertexColorAlpha'), mat.vertexColorAlpha === false ? 0 : 1);
+    gl.uniform1i(p.u('uVertexColorAlpha'), mat.vertexColorAlpha === false || opts.clothAlpha ? 0 : 1);
     gl.uniform1f(p.u('uSpecStrength'), mat.useSpecular ? (normRel || specRel ? 0.35 : 0.10) : 0.0);
     gl.uniform1f(p.u('uGloss'), mat.specFromDiffuse ? 0.5 : 0.75);
     gl.uniform1i(p.u('uDebugMode'), opts.debugMode | 0);

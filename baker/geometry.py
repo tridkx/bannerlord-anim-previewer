@@ -111,6 +111,8 @@ def write_meshpack(out_path: Path, subs: list[dict]) -> None:
                     lod=s["lod"], vertexCount=vc, indexCount=ic,
                     bbox=list(s["bbox"]), hasNormals=s["nrm"] is not None,
                     hasColor=s["col"] is not None, hasSkin=s["bone_idx"] is not None)
+        if "cloth" in s:
+            meta["cloth"] = s["cloth"]
         metas.append(meta)
         blobs.append(s["pos"].astype("<f4").tobytes())
         if s["nrm"] is not None:

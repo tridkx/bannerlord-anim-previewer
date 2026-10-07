@@ -81,6 +81,7 @@ mbpreview.bat serve [--port 8777] [--no-browser]
   一键穿整套；默认穿第一套，且套内同样按槽位互斥
 - **重烘焙**：mod 下拉框旁的按钮，改完 mod 后重新读取 tpac 并重建（Shift+点击 = 彻底重建）
 - **显示**：正/背/左/右/顶/脸/脚 视角，骨骼线框，地面网格，调试视图（仅贴图 / 法线 / UV / 仅光照），光照预设，背景色
+- **布料**：「显示 → 布料模拟」可开启实时布料、身体/地面碰撞，调整风力和活动距离，或重置。资源必须具有游戏布料标记与顶点 Alpha；暂停冻结，拖动时间轴、切动画和循环回起点会重置。详见 [布料实现与验证](docs/cloth-simulation.md)。
 - **诊断**：一键体检当前组合
 
 鼠标：左键旋转 · 滚轮缩放 · 右键或 Shift+左键平移
@@ -133,6 +134,7 @@ baker/                  Python 烘焙器与算法
   equipment.py          装备槽位 / covers 遮盖 / 原版体型
   actions.py            动作集解析 → 动画目录（含真实播放速率）
   bake.py               烘焙主流程 + 共享缓存
+  cloth.py              TPAC 布料元数据读取 / 旧缓存参数更新
   check.py              动画形变巡检
   shot.py               无头出图
   server.py             本地预览服务
@@ -175,7 +177,8 @@ data/                   烘焙产物（可删，会重建）
   量配平到 ≈1.0，但没移植游戏的延迟渲染管线与后处理（tonemapping / bloom / SSAO）。
   所以**明暗关系接近，但不等于实机截图**。
 - 游戏 shader 源码在 `Shaders/Sources/`（844 个文件，含 PBR/GGX），要更保真可以移植——还没做
-- 只支持人形骨架（28 骨）；武器/盾牌的持握点、多角色同屏、布料物理未做
+- 只支持人形骨架（28 骨）；武器/盾牌的持握点、多角色同屏未做
+- 布料已提供浏览器 PBD 直接模拟，读取游戏布料参数与顶点 Alpha；身体碰撞使用骨骼胶囊代理。尚未移植原生求解器、TCC/TCM 映射布料、游戏碰撞体和布料自碰撞，因此不是游戏布料的精确复刻。
 - 原版身体的体型参数（`BodyProperties` 的 build/weight/age）用的是默认值
 
 **已知差异**：`PitaoYingOutfits` 的肩膀处有一片深灰——已逐层排查确认是
@@ -275,6 +278,10 @@ window.__preview.speed            // 当前倍速
 window.__preview.visibleMeshes    // 可见网格数（0 = 什么都没渲染出来）
 window.__preview.setSpeed(0.5)    // 设倍速
 window.__preview.view('left')     // 切视角
+window.__preview.clothStatus()    // 布料启用状态、粒子数、不可模拟原因
+window.__preview.setCloth(false)  // 关掉布料，回到原始 GPU 蒙皮
+window.__preview.resetCloth()     // 重置物理历史
+window.__preview.stepCloth(1/60)  // 推进动画与布料一步（自动截图/测试）
 ```
 
 URL 参数（等价入口）：
@@ -283,4 +290,5 @@ URL 参数（等价入口）：
 ?mod=<mod名>&anim=<动画key>&frame=<帧号>&view=<front|back|left|right|top|face|feet>
 &equip=all|none|<逗号分隔的装备id>&skin=man|woman&speed=<倍速>
 &vanilla=0|1&bones=0|1&grid=0|1&debug=0..4&light=item|day|night|studio&only=<材质名>&noalphatest=1
+&cloth=0|1&wind=-20..20&clothcollisions=0|1
 ```

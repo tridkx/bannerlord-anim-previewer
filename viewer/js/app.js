@@ -9,6 +9,7 @@
 import { Loader } from './loader.js';
 import { Renderer } from './renderer.js';
 import { Rig } from './pose.js';
+import { ClothMesh, bodyCapsules } from './cloth.js';
 import { M4, V3, createProgram } from './math.js';
 
 const $ = s => document.querySelector(s);
@@ -27,6 +28,10 @@ const state = {
   frame: parseFloat(params.get('frame') || '0'),
   playing: true,
   looping: true,
+  clothEnabled: params.get('cloth') !== '0',
+  clothWind: Math.max(-20, Math.min(20, Number(params.get('wind')) || 0)),
+  clothCollisions: params.get('clothcollisions') !== '0',
+  clothDistance: 1,
   speed: (() => {
     const v = parseFloat(localStorage.getItem('mbpreview.speed') || (params.get('speed') || '1'));
     return Number.isFinite(v) && v > 0 ? v : 1;
@@ -416,6 +421,7 @@ async function selectAnim(key) {
     setLoading(true, `加载动画 ${key}…`);
     state.animKey = key;
     state.anim = await loader.loadAnim(key);
+    resetCloth();
     state.frame = 0; state.time = 0;
     const a = state.anim;
     const s0 = a.start || 0;
@@ -448,6 +454,7 @@ function tickAnim(dt) {
   let f = start + state.time * rate;
   if (state.looping) {
     f = start + ((f - start) % span);
+    if (f < state.frame) resetCloth();
   } else if (f >= last) {
     f = last; state.playing = false; $('#btn-play').textContent = '播放';
   }
@@ -460,7 +467,28 @@ function tickAnim(dt) {
 
 /* --------------------------------------------------------------------------- 渲染 */
 
-function render() {
+function resetCloth() {
+  for (const n of state.scene) for (const c of n.cloth || []) c.reset();
+}
+
+function clothStatus() {
+  return state.scene.filter(n => n.visible && n.kind === 'mod').flatMap(n =>
+    (n.cloth || []).map(c => ({name: n.name, active: c.active && state.clothEnabled,
+      particles: c.active ? c.reps.length : 0, reason: c.reason,
+      source: c.settings.source || 'unavailable'})));
+}
+
+function updateClothUI() {
+  const cloth = clothStatus(), active = cloth.filter(c => c.active);
+  const status = !state.clothEnabled ? '布料已关闭' :
+    `模拟 ${active.length} 个部件 / ${active.reduce((s, c) => s + c.particles, 0)} 个粒子`;
+  const details = cloth.filter(c => c.reason && c.reason !== '资源未启用布料')
+    .map(c => `${c.name}：${c.reason}`).join('\n');
+  if ($('#cloth-status').textContent !== status) $('#cloth-status').textContent = status;
+  if ($('#cloth-details').textContent !== details) $('#cloth-details').textContent = details;
+}
+
+function render(dt = 0) {
   const gl = renderer.gl;
   const light = LIGHTS[state.lightName] || LIGHTS.item;
   renderer.light.dir = V3.norm(light.dir);
@@ -484,12 +512,28 @@ function render() {
   if (state.rig && state.anim) {
     renderer.setBones(state.rig.update(state.anim, state.frame));
   } else if (state.rig) {
-    renderer.setBones(state.rig.skin.map((_, i) => {
+    const identity = state.rig.skin.map((_, i) => {
       const m = new Float32Array(16); m[0] = m[5] = m[10] = m[15] = 1; return m;
-    }));
+    });
+    state.rig.skin.forEach((m, i) => m.set(identity[i]));
+    renderer.setBones(identity);
+  }
+
+  const capsules = state.rig ? bodyCapsules(state.rig, !!state.anim) : [];
+  for (const n of state.scene) {
+    if (n.kind !== 'mod') continue;
+    if (!n.cloth) n.cloth = n.subs.map(s => new ClothMesh(s));
+    n.cloth.forEach((c, i) => {
+      const enabled = !!(n.visible && state.clothEnabled && c.active && state.rig);
+      if (!enabled) c.reset();
+      if (enabled) c.update(state.rig.skin, state.playing ? dt * state.speed : 0, capsules,
+        {wind: state.clothWind, collisions: state.clothCollisions, distanceScale: state.clothDistance});
+      renderer.updateCloth(n.gpu[i], c, enabled);
+    });
   }
 
   // 不透明/镂空先画（写深度），混合的后画
+  updateClothUI();
   const opaque = [], blended = [];
   for (const n of state.scene) {
     if (!n.visible) continue;
@@ -505,8 +549,10 @@ function render() {
 
 function renderNode(n, opts) {
   const mat = state.noAlphaTest ? { ...n.material, alphaTestOn: false } : n.material;
-  for (const g of n.gpu) {
+  for (let i = 0; i < n.gpu.length; i++) {
+    const g = n.gpu[i];
     renderer.drawSub(g, mat, { skinned: opts.skinned, debugMode: state.debugMode,
+                               clothAlpha: !!n.subs[i].meta.cloth?.enabled,
                                forceBlend: state.blendTest });
   }
 }
@@ -858,6 +904,14 @@ function activeSkin() {
 }
 
 function bindUI() {
+  $('#cloth-enabled').checked = state.clothEnabled;
+  $('#cloth-collisions').checked = state.clothCollisions;
+  $('#cloth-wind').value = String(state.clothWind);
+  $('#cloth-enabled').onchange = e => { state.clothEnabled = e.target.checked; resetCloth(); };
+  $('#cloth-collisions').onchange = e => { state.clothCollisions = e.target.checked; resetCloth(); };
+  $('#cloth-wind').oninput = e => { state.clothWind = Number(e.target.value); };
+  $('#cloth-distance').oninput = e => { state.clothDistance = Number(e.target.value); resetCloth(); };
+  $('#cloth-reset').onclick = resetCloth;
   // 标签页
   $$('.tab').forEach(t => t.onclick = () => {
     $$('.tab').forEach(x => x.classList.toggle('active', x === t));
@@ -874,6 +928,7 @@ function bindUI() {
   $('#btn-play').onclick = e => { state.playing = !state.playing; e.target.textContent = state.playing ? '暂停' : '播放'; };
   $('#btn-loop').onclick = e => { state.looping = !state.looping; e.target.classList.toggle('on', state.looping); };
   $('#timeline').oninput = e => {
+    resetCloth();
     state.frame = parseFloat(e.target.value);
     const s0 = state.anim?.start || 0;
     state.time = state.anim?.meta?.rate ? (state.frame - s0) / state.anim.meta.rate : state.frame / 60;
@@ -1298,6 +1353,14 @@ async function main() {
     wear: (ids) => { state.equipped = new Set(ids); return ensureMeshesLoaded(ids)
                        .then(() => { syncEquipCheckboxes(); applyEquipmentVisibility(); syncSetRow(); }); },
     sets: () => (state.manifest?.sets || []).map((st, i) => ({ i, label: st.label, members: st.members })),
+    clothStatus,
+    resetCloth,
+    setCloth: enabled => { state.clothEnabled = !!enabled; $('#cloth-enabled').checked = !!enabled; resetCloth(); },
+    stepCloth: (seconds = 1 / 60) => {
+      const dt = Math.max(0, Math.min(.05, Number(seconds) || 0));
+      const playing = state.playing;
+      state.playing = true; tickAnim(dt); render(dt); state.playing = playing;
+    },
   };
 
   lastT = performance.now();
@@ -1310,7 +1373,7 @@ function loop(now) {
   lastT = now;
   try {
     tickAnim(dt);
-    render();
+    render(dt);
     fpsAcc += dt; fpsN++;
     if (fpsAcc > 0.5) {
       $('#hud-fps').innerHTML = `${(fpsN / fpsAcc).toFixed(0)} fps`

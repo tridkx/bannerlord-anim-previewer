@@ -26,6 +26,7 @@ from . import animation as AN
 from . import config as C
 from . import equipment as EQ
 from . import geometry as GEO
+from . import cloth as CLOTH
 from . import material as MAT
 from . import mbtool as MB
 from . import skeleton as SK
@@ -319,6 +320,9 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
     exp = out_dir / "_export"
     # 只要 mip0：解码与渲染都只用第一级，导出整条 mip 链纯属白做功（还更慢、更占磁盘）
     pj = MB.exportmod(packs[0], exp, all_mips=False)
+    cloth_settings, cloth_warnings = CLOTH.read_settings(packs[0])
+    for warning in cloth_warnings:
+        _log(f"  ! {warning}")
     st = pj["stats"]
     _log(f"  导出: {st['meshes']} 网格 / {st['submeshes']} 子网格 / "
          f"{st['vertices']} 顶点 / {st['triangles']} 三角")
@@ -337,6 +341,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
         if not src.exists():
             continue
         subs = GEO.parse_gdmb(src)
+        CLOTH.attach(subs, cloth_settings.get(m['name'], []))
         lod0 = [s for s in subs if s["lod"] == 0]
         subs = lod0 or subs
         a = GEO.audit(subs)
