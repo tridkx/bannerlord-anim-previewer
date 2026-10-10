@@ -20,6 +20,9 @@ def parse_skeljson(data: dict) -> dict:
     rest_local = np.stack([
         np.array(b["rest"], np.float64).reshape(4, 4).T for b in bones   # 列主序 → 行主序
     ])
+    # Engine frames store a 3x4 affine transform; the fourth row may contain
+    # padding/flags (custom TPACs can export w=0). Only rotation/translation apply.
+    rest_local[:, 3, :] = [0, 0, 0, 1]
     parent = np.array([b["parent"] for b in bones], np.int32)
     names = [b["name"] for b in bones]
 

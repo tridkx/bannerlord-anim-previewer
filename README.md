@@ -36,6 +36,24 @@ mbpreview.bat --help              ← 命令行入口
 | 材质 | 纯黑/纯白片、镂空失效、双面不对、网格不跟骨骼动 |
 | 装备 | **原版身体露出来**、槽位冲突、covers 配错 |
 
+## 自定义种族预览
+
+支持当前 Mod 自带完整身体和兼容原版 28 骨人形骨架的自定义种族，例如 `WuduRaceTest`。Mod 下拉列表会自动识别种族定义；选择后自动烘焙，在「装备」页的体型下拉中选择种族及成年男性/女性皮肤。种族身体默认显示，不需要打开「未关联装备的网格」，也不会叠加原版身体。
+
+```bash
+mbpreview.bat bake WuduRaceTest --skin woman
+mbpreview.bat shot --mod WuduRaceTest --skin woman --anim inventory_idle --frame 200 -o wudu.png
+mbpreview.bat check WuduRaceTest --skin woman --frames 6
+```
+
+`--skin` 和 URL 的 `skin` 接受完整皮肤名称（例如 `wdr_canglan_woman`）；`man`/`woman` 在种族模式中选择成年男女。巡检默认使用烘焙选中的皮肤，可用 `--skin` 切换。
+
+第一版读取 `ModuleData/project.mbproj` 注册的 skin 文件；没有该项目文件时读取 `ModuleData/skins.xml`。身体部件必须位于当前 Mod 的 TPAC 内；骨架必须位于当前 Mod 内，或使用原版 `human_skeleton`。骨数、骨名语义、顺序和父子层级必须与原版人形兼容，不兼容资源会在烘焙时报错。
+
+预览使用所选皮肤自己的绑定骨架播放原版动画，并将 `min_scale` 作为固定预览缩放，同时应用于身体、骨骼线和取景。这是尺寸对照约定，不代表已复刻游戏的最终 AgentScale。当前不生成捏脸、儿童、体型形变，不合并兵种装备或其他模块的身体资源，也不读取 Mod 自定义动画、动作继承行为或运行时 DLL 对外观的修改。光照、布料和 IK 的保真边界仍适用。
+
+旧种族缓存首次打开会自动重新烘焙；之后修改资源仍需点击「重烘焙」。
+
 ---
 
 ## 快速开始
@@ -136,6 +154,7 @@ baker/                  Python 烘焙器与算法
   animation.py          动画解析 → MBAN + 姿态求解（LBS）
   material.py           BC1/BC3/BC4/BC5 解码 + alpha bleed + 材质语义翻译
   equipment.py          装备槽位 / covers 遮盖 / 原版体型
+  races.py              种族注册 / 成年皮肤 / 自定义骨架兼容检查
   actions.py            动作集解析 → 动画目录（含真实播放速率）
   bake.py               烘焙主流程 + 共享缓存
   cloth.py              TPAC 布料元数据读取 / 旧缓存参数更新

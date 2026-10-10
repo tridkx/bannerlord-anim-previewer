@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>骑砍2 皮套预览器</title>
 <link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:,">
 </head>
 <body>
 <div id="app">
@@ -117,16 +118,16 @@
 
       <!-- ============ 装备 ============ -->
       <div class="tabpane" id="pane-equip">
-        <p class="hint">同一槽位一次只能穿一件（游戏规则）。多套 mod 用顶部的「换装」整体切换。</p>
+        <p class="hint" id="equipment-hint">同一槽位一次只能穿一件（游戏规则）。多套 mod 用顶部的「换装」整体切换。</p>
         <div id="equip-list"></div>
 
-        <h3>原版身体对照</h3>
+        <h3 id="skin-heading">原版身体对照</h3>
         <div class="row">
           <label class="dim" style="flex:1">体型
             <select id="skin-select" style="width:100%;margin-top:3px"></select>
           </label>
         </div>
-        <p class="hint">标 <b class="warn">露出</b> 的是<b>没被任何装备遮住</b>的原版部件 ——
+        <p class="hint" id="vanilla-hint">标 <b class="warn">露出</b> 的是<b>没被任何装备遮住</b>的原版部件 ——
           实机里它会直接露出来。注明「原版游戏资产」的表示本 mod 没提供该部位。</p>
         <div id="skin-list"></div>
         <label class="switch-row">

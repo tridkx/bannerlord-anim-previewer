@@ -30,6 +30,7 @@ from . import cloth as CLOTH
 from . import material as MAT
 from . import mbtool as MB
 from . import skeleton as SK
+from . import races as RACE
 from PIL import Image
 
 
@@ -331,7 +332,7 @@ def list_mods() -> list[dict]:
         items = list((d / "ModuleData").glob("items*.xml")) + \
             list((d / "ModuleData" / "items").glob("*.xml")) if (d / "ModuleData").is_dir() else []
         out.append(dict(name=d.name, path=str(d), packs=[str(p) for p in packs],
-                        hasItems=bool(items)))
+                        hasItems=bool(items), hasRaces=d.name != 'Native' and bool(RACE.skin_files(d))))
     return out
 
 
@@ -442,13 +443,17 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
     _log(f"  装备件: {len(items)}" + (f"（识别出 {len(sets)} 套）" if sets else ""))
 
     # ---- 原版皮肤部件 ----
-    vanilla = ensure_vanilla(force)
-    skins = EQ.parse_skins(e.native_data / "skins.xml")
-    skin = skins.get(skin_prefer) or EQ.vanilla_skin_catalog(e.native_data / "skins.xml")
+    race_skins = RACE.bake_skins(mod_dir, packs, out_dir, rig_json, meshes)
+    vanilla = dict(parts={}, materials={}, textures={}) if race_skins else ensure_vanilla(force)
+    skins = race_skins or EQ.parse_skins(e.native_data / "skins.xml")
+    skin = RACE.select_skin(skins, skin_prefer) if race_skins else (skins.get(skin_prefer) or EQ.vanilla_skin_catalog(e.native_data / "skins.xml"))
     # 把可用体型一并给前端；前端只加载选中的那一套，否则男女两具身体会同时出现
     skins_view = {k: dict(label=SK_LABELS.get(k, k), gender=v["gender"],
                           maturity=v["maturity"], parts=v["parts"])
                   for k, v in skins.items() if v["maturity"] == "adult"}
+    if race_skins:
+        skins_view = race_skins
+        rig_json = skin['skeleton']
 
     # ---- 动画 ----
     catalog = ensure_catalog(force) if not skip_anims else dict(items=[], core=[], count=0, actionCount=0)
@@ -470,6 +475,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
         skin=dict(name=skin["name"], parts=skin["parts"],
                   label=SK_LABELS.get(skin["name"], skin["name"])),
         skins=skins_view,
+        raceVersion=RACE.RACE_VERSION, previewType='race' if race_skins else 'equipment',
         anims=anim_entries,
         catalogSummary=dict(count=catalog.get("count", 0), actionCount=catalog.get("actionCount", 0)),
         audit=audit_all,

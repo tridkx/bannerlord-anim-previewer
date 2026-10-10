@@ -121,6 +121,9 @@ def shot_batch(mod: str, anims: list[str], frames: list[float], views: list[str]
                              f"&light={kw.get('light','item')}"
                              f"&bones={1 if kw.get('bones') else 0}"
                              f"&grid={1 if kw.get('grid', True) else 0}")
+                        if kw.get('skin'):
+                            from urllib.parse import quote
+                            q += '&skin=' + quote(kw['skin'])
                         page.goto(base + "?" + q, wait_until="domcontentloaded")
                         try:
                             page.wait_for_function("() => window.__ready === true", timeout=40000)

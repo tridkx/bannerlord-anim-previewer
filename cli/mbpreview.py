@@ -67,7 +67,7 @@ def cmd_doctor(args) -> int:
 
 def cmd_mods(args) -> int:
     for m in B.list_mods():
-        print(f"{m['name']}\t{len(m['packs'])}包\t{'items' if m['hasItems'] else '-'}\t{m['path']}")
+        print(f"{m['name']}\t{len(m['packs'])}包\t{'items' if m['hasItems'] else '-'}\t{'races' if m.get('hasRaces') else '-'}\t{m['path']}")
     return 0
 
 
@@ -143,7 +143,15 @@ def cmd_inspect(args) -> int:
         cov = ",".join(sorted(it["covers"])) or "-"
         print(f"  [{it['slot']:6s}] {it['id']:28s} covers={cov:24s} {it['type']}")
     print(f"  体型 {skin['name']}：")
+    is_race = mf.get('previewType') == 'race'
+    if is_race:
+        selected = mf['skins'][skin['name']]
+        print(f"  种族 {selected['race']} / 骨架 {selected['skeleton']['name']} / 预览缩放 {selected['scale']}×")
     for k, v in plan["skinParts"].items():
+        label = EQ.SKIN_LABEL.get(k, k)
+        if is_race:
+            print(f"    身体部件 {label.removeprefix('原版'):14s} mesh={v}")
+            continue
         if k in plan["hiddenParts"]:
             print(f"    ✓ 隐藏 {EQ.SKIN_LABEL.get(k,k):14s} (被 {plan['hiddenParts'][k]['hiddenBy']} 遮住)")
         else:
@@ -178,7 +186,7 @@ def cmd_serve(args) -> int:
 def cmd_check(args) -> int:
     from baker import check as CK
     info = CK.check_mod(args.mod, anims=args.anim, frames=args.frames,
-                        max_anims=args.max, verbose=True)
+                        max_anims=args.max, verbose=True, skin=args.skin)
     return 2 if info["problems"] else 0
 
 
@@ -240,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--anim", action="append", help="要烘焙的动画（动作类型/动画名/关键词），可多次")
     p.add_argument("--anim-limit", type=int, default=24, help="默认动画集大小")
     p.add_argument("--no-anims", action="store_true", help="跳过动画")
-    p.add_argument("--skin", default="man", help="原版体型对照（man/woman）")
+    p.add_argument("--skin", default="man", help="皮肤名称，或 man/woman（种族模式选择成年男女）")
     p.add_argument("--force", action="store_true", help="忽略缓存全量重建")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=cmd_bake)
@@ -260,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--anim", action="append", help="只检查指定动画，可多次")
     p.add_argument("--frames", type=int, default=5, help="每个动画采样多少帧")
     p.add_argument("--max", type=int, default=8, help="最多检查多少个动画")
+    p.add_argument("--skin", help="种族皮肤名称，或 man/woman；默认检查烘焙时选择的皮肤")
     p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("shot", help="无头出图（给 AI 判读）")
@@ -280,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--hide-ui", action="store_true", help="隐藏右侧面板（纯净出图）")
     p.add_argument("--only", help="只显示名字/材质匹配的网格（诊断）")
     p.add_argument("--no-alpha-test", action="store_true", help="关掉镂空（诊断被丢弃的部分）")
-    p.add_argument("--skin", help="原版体型对照：man/woman")
+    p.add_argument("--skin", help="皮肤名称，或 man/woman（种族模式选择成年男女）")
     p.add_argument("--width", type=int, default=900)
     p.add_argument("--height", type=int, default=1200)
     p.add_argument("--wait", type=int, default=1200, help="就绪后再等的毫秒数")

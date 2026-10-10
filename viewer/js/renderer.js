@@ -351,6 +351,9 @@ export class Renderer {
     else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
 
     gl.uniform1i(p.u('uBoneCount'), this.boneCount || MAX_BONES);
+    const model = M4.identity();
+    model[0] = model[5] = model[10] = opts.scale || 1;
+    gl.uniformMatrix4fv(p.u('uModel'), false, model);
     gl.uniform1i(p.u('uSkinned'), (g.skinned && opts.skinned && !g.clothActive) ? 1 : 0);
     gl.uniform1i(p.u('uHasColor'), g.hasColor ? 1 : 0);
     gl.uniform1i(p.u('uTwoSided'), mat.twoSided ? 1 : 0);

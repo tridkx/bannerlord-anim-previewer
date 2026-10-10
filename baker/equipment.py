@@ -35,6 +35,7 @@ SLOT_LABEL = {"Head": "头部", "Cape": "披风", "Body": "身体", "Gloves": "�
 # 原版皮肤部件（skins.xml 的字段名 → 预览器内部名）
 SKIN_FIELDS = {
     "body_meta_mesh": "body", "body_meta_mesh_shoulders": "shoulders",
+    "body_meta_mesh_upperbody": "upperbody",
     "legs_mesh": "legs", "hands_mesh": "hands", "face_meta_mesh": "face",
     "underwear_bottom_mesh": "underwear_bottom", "underwear_top_mesh": "underwear_top",
 }
@@ -58,7 +59,8 @@ def parse_skins(path: Path) -> dict:
                     parts[key] = v
             out[name] = dict(race=race.get("id"), gender=int(skin.get("gender") or 0),
                              name=name, maturity=skin.get("mesh_maturity_type"),
-                             parts=parts, min_scale=float(skin.get("min_scale") or 1.0))
+                             parts=parts, skeleton=skin.get('skeleton') or 'human_skeleton',
+                             min_scale=float(skin.get("min_scale") or 1.0))
     return out
 
 
@@ -120,6 +122,8 @@ def hidden_skin_parts(equipped: list[dict], skin_parts: dict) -> dict[str, str]:
         src = it["id"]
         if c.get("body"):
             hidden.setdefault("body", src)
+            if "upperbody" in skin_parts:
+                hidden.setdefault("upperbody", src)
             if "shoulders" in skin_parts:
                 hidden.setdefault("shoulders", src)
             if "underwear_top" in skin_parts:

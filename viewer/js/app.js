@@ -133,7 +133,7 @@ function applyView(name) {
   state.cam.el = v.el;
   const rig = state.rig;
   if (v.focus && rig) {
-    const j = rig.joints;
+    const j = rig.joints.map(p => p.map(v => v * characterScale()));
     const head = j[13] || [0, 0, 1.57];
     const toe = j[4] || [0, 0, 0];
     if (v.focus === 'face') { state.cam.target = [head[0], head[1], head[2] - 0.02]; state.cam.dist = 0.5; }
@@ -155,8 +155,8 @@ function refitCamera(keepAngles = true) {
       const b = s.meta.bbox;                 // [minx,miny,minz, maxx,maxy,maxz]
       if (!b) continue;
       for (let k = 0; k < 3; k++) {
-        lo[k] = Math.min(lo[k], b[k]);
-        hi[k] = Math.max(hi[k], b[k + 3]);
+        lo[k] = Math.min(lo[k], b[k] * characterScale());
+        hi[k] = Math.max(hi[k], b[k + 3] * characterScale());
       }
       n++;
     }
@@ -219,6 +219,7 @@ async function buildScene() {
   state._byId = byId;
 
   for (const m of mf.meshes || []) {
+    if (mf.previewType === 'race' && raceMeshes().has(m.mesh)) continue;
     const item = itemByMesh.get(m.mesh);
     // 没有对应 item 的网格（不属于任何装备）总是加载
     if (item && !state.equipped.has(item.id)) continue;
@@ -286,6 +287,20 @@ async function prefetchTextures(nodes) {
 async function loadVanillaNodes() {
   const mf = state.manifest;
   const out = [];
+  if (mf.previewType === 'race') {
+    const parts = activeSkin().parts || {};
+    for (const mesh of new Set(Object.values(parts))) {
+      const info = state._meshIndex.get(mesh);
+      if (!info) throw new Error(`种族身体资源缺失：${mesh}`);
+      const nodes = await loadMeshNodes(info, null);
+      for (const n of nodes) {
+        n.raceBody = true;
+        n.partKeys = Object.keys(parts).filter(k => parts[k] === mesh);
+      }
+      out.push(...nodes);
+    }
+    return out;
+  }
   const van = mf.vanilla || { parts: {} };
   const skinParts = activeSkin().parts || {};
   const meshToSemantic = {};
@@ -344,7 +359,7 @@ function applyEquipmentVisibility() {
   const hidden = new Set();
   for (const it of equippedItems) {
     const c = it.covers || {};
-    if (c.body) { hidden.add('body'); hidden.add('shoulders'); hidden.add('underwear_top'); }
+    if (c.body) { hidden.add('body'); hidden.add('shoulders'); hidden.add('upperbody'); hidden.add('underwear_top'); }
     if (c.hands) hidden.add('hands');
     if (c.legs) { hidden.add('legs'); hidden.add('underwear_bottom'); }
     if (c.head) hidden.add('face');
@@ -357,7 +372,8 @@ function applyEquipmentVisibility() {
       //   早先写成 `!n.item || 已装备`，结果这类网格永远可见 ——
       //   实测 LVBU and DIAOCHAN 有个 mn_cubk_tui 就属于这种，切多少套它都赖在场上。
       //   现在交给单独的开关 state.showOrphans 控制（界面「未关联装备的网格」一组）。
-      n.visible = n.item ? state.equipped.has(n.item.id) : state.showOrphans;
+      n.visible = n.raceBody ? n.partKeys.some(k => !hidden.has(k))
+        : (n.item ? state.equipped.has(n.item.id) : state.showOrphans);
     } else {
       n.visible = state.showVanilla && !hidden.has(n.partKey);
     }
@@ -552,6 +568,7 @@ function renderNode(n, opts) {
   for (let i = 0; i < n.gpu.length; i++) {
     const g = n.gpu[i];
     renderer.drawSub(g, mat, { skinned: opts.skinned, debugMode: state.debugMode,
+                               scale: characterScale(),
                                clothAlpha: !!n.subs[i].meta.cloth?.enabled,
                                forceBlend: state.blendTest });
   }
@@ -611,7 +628,7 @@ function drawGrid() {
 }
 
 function drawBones() {
-  const j = state.rig.currentJoints();
+  const j = state.rig.currentJoints().map(p => p.map(v => v * characterScale()));
   const par = state.rig.parent;
   const v = [], c = [];
   for (let i = 0; i < par.length; i++) {
@@ -707,7 +724,7 @@ function renderEquipList() {
     el.appendChild(g);
   }
   // ---- 未关联装备的网格（items.xml 里没有定义的那些）----
-  const orphans = (mf.meshes || []).filter(m => !itemByMeshHas(mf, m.mesh));
+  const orphans = (mf.meshes || []).filter(m => !itemByMeshHas(mf, m.mesh) && !raceMeshes().has(m.mesh));
   if (orphans.length) {
     const g = document.createElement('div');
     g.className = 'eq-group';
@@ -823,14 +840,23 @@ function syncEquipCheckboxes() {
 
 /** 只重建「原版身体」那一部分 —— 换体型时不必重载 mod 的网格 */
 async function rebuildVanilla() {
-  state.scene = state.scene.filter(n => n.kind !== 'vanilla');
+  state.scene = state.scene.filter(n => n.kind !== 'vanilla' && !n.raceBody);
+  if (activeSkin().skeleton) state.rig = new Rig(activeSkin().skeleton);
   state.scene.push(...await loadVanillaNodes());
   applyEquipmentVisibility();
+  resetCloth();
+  refitCamera();
 }
 
 function renderSkinSelect() {
   const sel = $('#skin-select');
   if (!sel) return;
+  const isRace = state.manifest.previewType === 'race';
+  $('#skin-heading').textContent = isRace ? '种族与成年皮肤' : '原版身体对照';
+  $('#vanilla-hint').hidden = isRace;
+  $('#equipment-hint').textContent = isRace
+    ? '种族身体自动显示。下方选择成年男女皮肤；当前仅预览注册身体，不合并兵种装备。'
+    : '同一槽位一次只能穿一件（游戏规则）。多套 mod 用顶部的「换装」整体切换。';
   const all = state.manifest.skins || {};
   sel.innerHTML = '';
   for (const [k, v] of Object.entries(all)) {
@@ -839,7 +865,8 @@ function renderSkinSelect() {
     sel.appendChild(o);
   }
   const cur = state.skinName || state.manifest.skin?.name;
-  if (cur) sel.value = cur;
+  if (cur && all[cur]) sel.value = cur;
+  else sel.value = state.manifest.skin?.name;
   sel.onchange = async () => {
     state.skinName = sel.value;
     setLoading(true, '切换体型…');
@@ -851,6 +878,15 @@ function renderSkinSelect() {
 function renderSkinList(equippedItems, hidden) {
   const el = $('#skin-list');
   if (!el) return;
+  if (state.manifest.previewType === 'race') {
+    el.replaceChildren();
+    const note = document.createElement('p');
+    note.className = 'hint';
+    const skin = activeSkin();
+    note.textContent = `${skin.label} · 种族身体来自当前 Mod · 预览缩放 ${skin.scale}×（min_scale）。不生成捏脸、年龄或体型形变。`;
+    el.appendChild(note);
+    return;
+  }
   const parts = (state.manifest.vanilla || {}).parts || {};
   const skinParts = activeSkin().parts || {};
   const byId = state._byId || new Map();
@@ -900,7 +936,18 @@ function activeSkin() {
   const mf = state.manifest;
   const all = mf.skins || {};
   const want = state.skinName || mf.skin?.name;
-  return all[want] || mf.skin || { name: '?', parts: {} };
+  const alias = mf.previewType === 'race' && ['man', 'woman'].includes(want)
+    ? Object.values(all).find(s => s.gender === (want === 'woman' ? 1 : 0)) : null;
+  return all[want] || alias || all[mf.skin?.name] || mf.skin || { name: '?', parts: {} };
+}
+
+function raceMeshes() {
+  if (state.manifest.previewType !== 'race') return new Set();
+  return new Set(Object.values(state.manifest.skins).flatMap(s => Object.values(s.parts)));
+}
+
+function characterScale() {
+  return state.manifest?.previewType === 'race' ? (activeSkin().scale || 1) : 1;
 }
 
 function bindUI() {
@@ -1258,13 +1305,20 @@ async function loadModInner(name) {
   }
   // 旧缓存只含首包，多包 Mod 首次打开时自动迁移。
   const info = (state._mods || []).find(m => m.name === name);
-  if (info?.packs?.length > 1 && !mf.packageVersion) {
+  if ((info?.packs?.length > 1 && !mf.packageVersion) || (info?.hasRaces && !mf.raceVersion)) {
     await ensureBaked(name);
     clearLoaderCaches();
     mf = await loader.loadManifest(name);
   }
   state.manifest = mf;
-  state.rig = new Rig(mf.skeleton);
+  const selectedSkin = activeSkin();
+  state.skinName = Object.keys(mf.skins || {}).find(k => mf.skins[k] === selectedSkin) || mf.skin.name;
+  state.rig = new Rig(activeSkin().skeleton || mf.skeleton);
+  for (const id of ['show-vanilla', 'show-vanilla-top']) {
+    const control = document.getElementById(id);
+    control.disabled = mf.previewType === 'race';
+    control.parentElement.style.display = mf.previewType === 'race' ? 'none' : '';
+  }
   state.animList = mf.anims || [];
 
   // 默认装备：全部 mod 装备

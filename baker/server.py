@@ -148,7 +148,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _api_mods(self):
         from . import bake as B
         try:
-            mods = [m for m in B.list_mods() if m["hasItems"] or
+            mods = [m for m in B.list_mods() if m["hasItems"] or m.get('hasRaces') or
                     (DATA_DIR / "mods" / m["name"] / "manifest.json").exists()]
         except Exception:
             mods = []

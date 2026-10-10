@@ -25,13 +25,7 @@ import numpy as np
 from . import animation as AN
 from . import config as C
 from . import geometry as GEO
-from . import skeleton as SK
-
-
-def _load_rig() -> dict:
-    e = C.env()
-    raw = json.loads((e.cache_dir / "skeleton_raw.json").read_text(encoding="utf-8"))
-    return SK.parse_skeljson(raw)
+from . import races as RACE
 
 
 def _load_meshes(manifest: dict) -> list[tuple[str, dict]]:
@@ -46,16 +40,21 @@ def _load_meshes(manifest: dict) -> list[tuple[str, dict]]:
 
 
 def check_mod(mod: str, anims: list[str] | None = None, frames: int = 5,
-              max_anims: int = 8, verbose: bool = False) -> dict:
+              max_anims: int = 8, verbose: bool = False, skin: str | None = None) -> dict:
     e = C.env()
     mod_dir = e.data_dir / "mods" / mod
     mf_p = mod_dir / "manifest.json"
     if not mf_p.exists():
         raise FileNotFoundError(f"未烘焙：{mod_dir}（先跑 mbpreview bake {mod}）")
     mf = json.loads(mf_p.read_text(encoding="utf-8"))
-    rig = _load_rig()
+    selected = RACE.select_skin(mf['skins'], skin or mf['skin']['name']) if mf.get('previewType') == 'race' else None
+    rig = RACE.rig_from_viewer(selected['skeleton']) if selected else RACE.rig_from_viewer(mf['skeleton'])
     Mb = rig["restWorld"]
     meshes = _load_meshes(mf)
+    scale = selected['scale'] if selected else 1.0
+    if selected:
+        wanted = set(selected['parts'].values())
+        meshes = [(name, sub) for name, sub in meshes if name.split('/')[0] in wanted]
 
     problems: list[dict] = []
     info: dict = {"mod": mod, "meshes": len(meshes),
@@ -96,13 +95,14 @@ def check_mod(mod: str, anims: list[str] | None = None, frames: int = 5,
         ratios, minz, maxz = [], 1e9, -1e9
         disps = []
         for fi in range(frames):
-            t = int(round(fi * (n_fr - 1) / max(1, frames - 1)))
+            start = max(1, anim.get('start', 0))
+            t = int(round(start + fi * (n_fr - 1 - start) / max(1, frames - 1)))
             skin = AN.skin_matrices(rig, anim, t)
             for name, s in meshes:
                 p2 = AN.lbs(s["pos"], s["bone_idx"], s["bone_w"], skin)
-                disps.append(np.linalg.norm(p2 - s["pos"], axis=1))
-                minz = min(minz, float(p2[:, 2].min()))
-                maxz = max(maxz, float(p2[:, 2].max()))
+                disps.append(np.linalg.norm(p2 - s["pos"], axis=1) * scale)
+                minz = min(minz, float(p2[:, 2].min()) * scale)
+                maxz = max(maxz, float(p2[:, 2].max()) * scale)
                 tri = s.get("tri")
                 if tri is None:
                     continue
