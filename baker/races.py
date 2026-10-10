@@ -7,6 +7,28 @@ from . import equipment as EQ, mbtool as MB, skeleton as SK
 
 RACE_VERSION = 1
 
+# Exact catalog keys avoid accidentally selecting animal or scene animations.
+PREVIEW_ANIMS = (
+    'inventory_idle', 'walk_forward_unarmed', 'run_forward_unarmed',
+    'jumps_forward', 'slashright_onehanded_balance', 'overswing_onehanded_new',
+    'mainmap_attack_2h', 'defend_forward_onehanded', 'bow_ready_continue',
+    'rider_idle_lance_1', 'rider_walk_bow', 'rider_gallop_bow',
+)
+
+
+def default_anims(catalog: dict, limit: int) -> list[dict]:
+    from . import actions
+    by_key = {entry['key']: entry for entry in catalog['items']}
+    selected = [by_key[key] for key in PREVIEW_ANIMS if key in by_key and by_key[key].get('tEnd', 0) > 0][:limit]
+    seen = {entry['key'] for entry in selected}
+    for entry in actions.default_selection(catalog, limit=limit):
+        if len(selected) >= limit:
+            break
+        if entry['key'] not in seen and entry.get('tEnd', 0) > 0:
+            selected.append(entry)
+            seen.add(entry['key'])
+    return selected
+
 
 def skin_files(module: Path) -> list[Path]:
     project = module / 'ModuleData' / 'project.mbproj'

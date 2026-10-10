@@ -463,7 +463,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
             sel = A.resolve_anims(catalog, anims)
             _log(f"  选定动画 {len(sel)} 个（来自请求: {', '.join(anims[:6])}{'…' if len(anims) > 6 else ''}）")
         else:
-            sel = A.default_selection(catalog, limit=anim_limit)
+            sel = RACE.default_anims(catalog, anim_limit) if race_skins else A.default_selection(catalog, limit=anim_limit)
             _log(f"  默认动画集 {len(sel)} 个")
         anim_entries = ensure_anims(sel, force=force, progress=progress)
 

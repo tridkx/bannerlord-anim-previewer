@@ -7,6 +7,15 @@ from baker import races, skeleton
 
 
 class RaceTests(unittest.TestCase):
+    def test_default_preview_avoids_empty_animation_definitions(self):
+        from unittest.mock import patch
+        empty = dict(key='jump', tEnd=0)
+        idle = dict(key='inventory_idle', tEnd=30)
+        run = dict(key='run_forward_unarmed', tEnd=25)
+        with patch('baker.actions.default_selection', return_value=[empty, idle, run]):
+            selected = races.default_anims(dict(items=[empty, idle, run]), 12)
+        self.assertEqual([entry['key'] for entry in selected], ['inventory_idle', 'run_forward_unarmed'])
+
     def test_registered_skin_file_and_adult_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             module = Path(directory)
