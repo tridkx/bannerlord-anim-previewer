@@ -192,7 +192,17 @@ export class ClothMesh {
           const len2 = ax * ax + ay * ay + az * az;
           const t = len2 > 1e-12 ? clamp((ax * px + ay * py + az * pz) / len2, 0, 1) : 0;
           const dx = px - ax * t, dy = py - ay * t, dz = pz - az * t;
-          const length = Math.hypot(dx, dy, dz), r = c.radius + .003;
+          const length = Math.hypot(dx, dy, dz);
+          let r = c.radius + .003;
+          if (length < r) {
+            // Proxy capsules can already contain the authored, skinned garment.
+            // Preserve that baseline clearance instead of ejecting hair/skirt
+            // from an oversized proxy. Only resist additional penetration.
+            const sx = anchors[o] - c.a[0], sy = anchors[o + 1] - c.a[1], sz = anchors[o + 2] - c.a[2];
+            const st = len2 > 1e-12 ? clamp((ax * sx + ay * sy + az * sz) / len2, 0, 1) : 0;
+            const clearance = Math.hypot(sx - ax * st, sy - ay * st, sz - az * st);
+            r = Math.min(r, clearance);
+          }
           if (length < r) {
             // Defined direction even if the particle lies on the capsule axis.
             if (length < 1e-8) this.p[o] += r;
