@@ -266,6 +266,42 @@ def ensure_vanilla(force: bool = False) -> dict:
 
 # --------------------------------------------------------------------------- mod 烘焙
 
+PACKAGE_VERSION = 1
+
+
+def export_packages(packs: list[Path], exp: Path) -> dict:
+    """各包独立导出，按文件名顺序合并；同名资产取后包并提示。"""
+    merged = {kind: {} for kind in ("meshes", "materials", "textures")}
+    for index, pack in enumerate(packs):
+        prefix = f"pack{index}"
+        package_dir = exp / prefix
+        pj = MB.exportmod(pack, package_dir, all_mips=False)
+        settings, warnings = CLOTH.read_settings(pack)
+        for warning in warnings:
+            _log(f"  ! {pack.name}: {warning}")
+        for kind, assets in merged.items():
+            for entry in pj.get(kind, []):
+                entry = dict(entry, sourcePack=pack.name)
+                if entry.get("file"):
+                    entry["file"] = f"{prefix}/{entry['file']}"
+                if kind == "meshes":
+                    entry["clothSettings"] = settings.get(entry["name"], [])
+                if entry["name"] in assets:
+                    _log(f"  ! 同名 {kind} {entry['name']}: "
+                         f"{assets[entry['name']]['sourcePack']} → {pack.name}")
+                assets[entry["name"]] = entry
+    textures_by_guid = {t["guid"].lower(): t["name"]
+                        for t in merged["textures"].values() if t.get("guid")}
+    pack_by_name = {p.name: p for p in packs}
+    for mat in merged["materials"].values():
+        slots = mat.get("textures") or {}
+        if len(packs) > 1 and any(not value for value in slots.values()):
+            guids = MB.material_texture_guids(pack_by_name[mat["sourcePack"]], mat["name"])
+            mat["textures"] = {slot: value or textures_by_guid.get(guids.get(str(slot)), "")
+                               for slot, value in slots.items()}
+    return {kind: list(assets.values()) for kind, assets in merged.items()}
+
+
 def find_mod(name_or_path: str) -> Path:
     p = Path(name_or_path)
     if p.is_dir():
@@ -319,13 +355,12 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
     # ---- 几何 / 材质 / 贴图 ----
     exp = out_dir / "_export"
     # 只要 mip0：解码与渲染都只用第一级，导出整条 mip 链纯属白做功（还更慢、更占磁盘）
-    pj = MB.exportmod(packs[0], exp, all_mips=False)
-    cloth_settings, cloth_warnings = CLOTH.read_settings(packs[0])
-    for warning in cloth_warnings:
-        _log(f"  ! {warning}")
-    st = pj["stats"]
-    _log(f"  导出: {st['meshes']} 网格 / {st['submeshes']} 子网格 / "
-         f"{st['vertices']} 顶点 / {st['triangles']} 三角")
+    if exp.exists():
+        exp.resolve().relative_to(e.data_dir.resolve())
+        shutil.rmtree(exp)
+    pj = export_packages(packs, exp)
+    material_by_guid = {m["guid"].lower(): m["name"]
+                        for m in pj["materials"] if m.get("guid")}
 
     geo_dir = out_dir / "geo"
     tex_dir = out_dir / "tex"
@@ -341,7 +376,10 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
         if not src.exists():
             continue
         subs = GEO.parse_gdmb(src)
-        CLOTH.attach(subs, cloth_settings.get(m['name'], []))
+        CLOTH.attach(subs, m["clothSettings"])
+        for sub in subs:
+            if sub.get("material_guid"):
+                sub["material"] = material_by_guid.get(sub["material_guid"].lower(), sub["material"])
         lod0 = [s for s in subs if s["lod"] == 0]
         subs = lod0 or subs
         a = GEO.audit(subs)
@@ -355,6 +393,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
         dst = geo_dir / f"{m['name']}.mbmg"
         GEO.write_meshpack(dst, subs)
         meshes.append(dict(mesh=m["name"], file=f"mods/{mod_name}/geo/{m['name']}.mbmg",
+                           sourcePack=m["sourcePack"],
                            lod=m.get("lod", 0),
                            humanSkeleton=a["humanSkeleton"],
                            maxBoneIndex=a["max_bone_index"],
@@ -364,6 +403,9 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
                                            bbox=list(s["bbox"])) for s in subs],
                            vertices=a["vertices"], triangles=a["triangles"]))
 
+    _log(f"  导出: {len(meshes)} 网格 / {audit_all['submeshes']} 子网格 / "
+         f"{audit_all['vertices']} 顶点 / {audit_all['triangles']} 三角")
+
     # ---- 材质 ----
     materials = {}
     for m in pj.get("materials", []):
@@ -371,9 +413,9 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
 
     # ---- 贴图 ----
     textures = {}
-    tex_src = exp / "tex"
     for t in pj.get("textures", []):
         try:
+            tex_src = (exp / t["file"]).parent
             meta = MAT.export_texture(t, tex_src, tex_dir, max_size=max_tex)
             meta["file"] = f"mods/{mod_name}/tex/{meta['name']}.png"
             textures[meta["name"]] = meta
@@ -422,6 +464,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
 
     manifest = dict(
         format=1, mod=mod_name, modPath=str(mod_dir), builtAt=time.time(),
+        packageVersion=PACKAGE_VERSION, sourcePacks=[p.name for p in packs],
         meshes=meshes, materials=materials, textures=textures,
         items=items, sets=sets, skeleton=rig_json, vanilla=vanilla,
         skin=dict(name=skin["name"], parts=skin["parts"],
@@ -430,7 +473,7 @@ def bake_mod(mod: str, anims: list[str] | None = None, anim_limit: int = 24,
         anims=anim_entries,
         catalogSummary=dict(count=catalog.get("count", 0), actionCount=catalog.get("actionCount", 0)),
         audit=audit_all,
-        stats=dict(vertices=st["vertices"], triangles=st["triangles"]),
+        stats=dict(vertices=audit_all["vertices"], triangles=audit_all["triangles"]),
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,13 @@ def exportmod(pack: Path, out_dir: Path, lod: int = -1, all_mips: bool = True) -
     if not pj.exists():
         raise MbToolError(f"exportmod 未产出 pack.json: {out_dir}")
     return json.loads(pj.read_text(encoding="utf-8"))
+
+
+def material_texture_guids(pack: Path, name: str) -> dict[str, str]:
+    """exportmod 只返回包内贴图名；用 mat 的槽位 GUID 补全跨包引用。"""
+    output = run("mat", pack, name)
+    return {slot: guid.lower() for slot, guid in re.findall(
+        r"^\s*\[\s*(\d+)\]\s+([0-9a-fA-F-]{36})\s*$", output, re.MULTILINE)}
 
 
 def skeljson(skeletons_pack: Path, guid: str, out_json: Path) -> dict:

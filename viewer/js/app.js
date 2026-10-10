@@ -1256,6 +1256,13 @@ async function loadModInner(name) {
       throw e;
     }
   }
+  // 旧缓存只含首包，多包 Mod 首次打开时自动迁移。
+  const info = (state._mods || []).find(m => m.name === name);
+  if (info?.packs?.length > 1 && !mf.packageVersion) {
+    await ensureBaked(name);
+    clearLoaderCaches();
+    mf = await loader.loadManifest(name);
+  }
   state.manifest = mf;
   state.rig = new Rig(mf.skeleton);
   state.animList = mf.anims || [];

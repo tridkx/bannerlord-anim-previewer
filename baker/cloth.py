@@ -139,7 +139,12 @@ def upgrade_cache(mod_dir: Path):
     packs = sorted((Path(manifest['modPath']) / 'AssetPackages').glob('*.tpac'))
     if not packs:
         raise FileNotFoundError(f"no source TPAC for {manifest['mod']}")
-    settings, warnings = read_settings(packs[0])
+    settings, warnings = {}, []
+    for pack in packs:
+        pack_settings, pack_warnings = read_settings(pack)
+        settings[pack.name] = pack_settings
+        warnings.extend(f'{pack.name}: {warning}' for warning in pack_warnings)
+    # 旧清单只烘焙第一个包；新清单明确记录每个网格来源。
     changed = 0
     for mesh in manifest['meshes']:
         path = env().data_path(mesh['file'])
@@ -148,7 +153,9 @@ def upgrade_cache(mod_dir: Path):
         if magic != b'MBMG' or version != 1:
             raise ValueError(f'unsupported meshpack: {path}')
         metas = json.loads(buf[16:16 + length])
-        entries = {(e['name'], e['lod']): e['cloth'] for e in settings.get(mesh['mesh'], [])}
+        source = mesh.get('sourcePack', packs[0].name)
+        entries = {(e['name'], e['lod']): e['cloth']
+                   for e in settings.get(source, {}).get(mesh['mesh'], [])}
         for meta in metas:
             meta['cloth'] = entries.get((meta['name'], meta['lod']),
                                        dict(enabled=False, source='unavailable'))
