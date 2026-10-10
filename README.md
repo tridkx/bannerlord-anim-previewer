@@ -56,6 +56,8 @@ mbpreview.bat check WuduRaceTest --skin woman --frames 6
 
 旧种族缓存首次打开会自动重新烘焙；之后修改资源仍需点击「重烘焙」。
 
+种族身体也支持「显示 → 布料模拟」，默认开启，点击播放后随动画推进。WuduRaceTest 的袖口、衣摆和头发共 5 个布料部件可直接模拟；暂停冻结，切皮肤或动作会重置。支持风力、身体/地面碰撞和活动距离设置，具体算法与限制见 [布料预览](docs/cloth-simulation.md)。
+
 ---
 
 ## 快速开始

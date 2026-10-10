@@ -50,7 +50,7 @@ export class ClothMesh {
     else if (this.settings.simulationMesh && !/^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(this.settings.simulationMesh))
       this.reason = '映射布料尚未支持（保留原始蒙皮）';
     else if (!sub.color) this.reason = '缺少顶点 Alpha';
-    else if (sub.position.length / 3 > 16000) this.reason = '直接布料超过 16000 顶点预算';
+    else if (sub.position.length / 3 > 64000) this.reason = '直接布料超过 64000 渲染顶点预算';
     this.active = !this.reason;
     if (!this.active) return;
     this.position = new Float32Array(sub.position.length);
@@ -73,6 +73,9 @@ export class ClothMesh {
       this.vertexParticle[i] = map.get(key);
     }
     this.reps = reps;
+    if (reps.length > 16000) {
+      this.active = false; this.reason = '直接布料超过 16000 物理点预算'; return;
+    }
     this.radius = new Float32Array(radii);
     this.movable = radii.filter(r => r > 0).length;
     if (!this.movable) { this.active = false; this.reason = 'Alpha 全零，全部固定'; return; }

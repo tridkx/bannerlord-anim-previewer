@@ -32,6 +32,25 @@ const off = sub(); off.meta.cloth.enabled = false;
 assert.equal(new ClothMesh(off).active, false);
 const mapped = sub(); mapped.meta.cloth.simulationMesh = '11111111-0000-0000-0000-000000000000';
 assert.match(new ClothMesh(mapped).reason, /映射/);
+// Render seams can exceed the old vertex cap while requiring few physics points.
+const repeated = sub();
+repeated.position = new Float32Array(18000 * 3);
+repeated.color = new Uint8Array(18000 * 4);
+repeated.boneIndex = new Uint8Array(18000 * 4);
+repeated.boneWeight = new Uint8Array(18000 * 4).fill(63);
+for (let i=0; i<18000; i++) {
+  repeated.position.set(s.position.subarray((i%4)*3, (i%4)*3+3), i*3);
+  repeated.color.set(s.color.subarray((i%4)*4, (i%4)*4+4), i*4);
+}
+const welded = new ClothMesh(repeated);
+assert.equal(welded.active, true);
+assert.equal(welded.reps.length, 4);
+const unique = sub();
+unique.position = Float32Array.from({length: 17000*3}, (_, i) => i*.001);
+unique.color = new Uint8Array(17000*4).fill(255);
+unique.boneIndex = new Uint8Array(17000*4);
+unique.boneWeight = new Uint8Array(17000*4).fill(63);
+assert.match(new ClothMesh(unique).reason, /物理点预算/);
 const contact = sub(); contact.position.fill(0); contact.meta.cloth.maxDistance=1;
 const collider = new ClothMesh(contact);
 collider.update([identity()], 1/60, [{a:[0,0,-1], b:[0,0,1], radius:.1}]);

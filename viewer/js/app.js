@@ -490,14 +490,16 @@ function resetCloth() {
 function clothStatus() {
   return state.scene.filter(n => n.visible && n.kind === 'mod').flatMap(n =>
     (n.cloth || []).map(c => ({name: n.name, active: c.active && state.clothEnabled,
-      particles: c.active ? c.reps.length : 0, reason: c.reason,
+      particles: c.active ? c.reps.length : 0, movable: c.active ? c.movable : 0,
+      raceBody: !!n.raceBody, reason: c.reason,
       source: c.settings.source || 'unavailable'})));
 }
 
 function updateClothUI() {
   const cloth = clothStatus(), active = cloth.filter(c => c.active);
   const status = !state.clothEnabled ? '布料已关闭' :
-    `模拟 ${active.length} 个部件 / ${active.reduce((s, c) => s + c.particles, 0)} 个粒子`;
+    `模拟 ${active.length} 个部件 / ${active.reduce((s, c) => s + c.particles, 0)} 个粒子`
+      + (state.manifest?.previewType === 'race' ? '（种族身体）' : '');
   const details = cloth.filter(c => c.reason && c.reason !== '资源未启用布料')
     .map(c => `${c.name}：${c.reason}`).join('\n');
   if ($('#cloth-status').textContent !== status) $('#cloth-status').textContent = status;
